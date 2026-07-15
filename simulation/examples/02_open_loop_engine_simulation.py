@@ -30,6 +30,7 @@ def main() -> None:
     )
 
     rotor_speeds_rpm: list[float] = []
+    exhaust_temperatures_c: list[float] = []
     fuel_commands: list[float] = []
     estimated_thrusts_n: list[float] = []
 
@@ -45,10 +46,13 @@ def main() -> None:
         )
 
         rotor_speeds_rpm.append(engine_model.state.rotor_speed_rpm)
+        exhaust_temperatures_c.append(
+            engine_model.state.exhaust_temperature_c
+        )
         fuel_commands.append(fuel_command)
         estimated_thrusts_n.append(outputs.estimated_thrust_n)
 
-    figure, axes = plt.subplots(3, 1, sharex=True)
+    figure, axes = plt.subplots(4, 1, sharex=True)
 
     axes[0].plot(times_s, fuel_commands)
     axes[0].set_ylabel("Fuel command [-]")
@@ -58,10 +62,14 @@ def main() -> None:
     axes[1].set_ylabel("Rotor speed [rpm]")
     axes[1].grid()
 
-    axes[2].plot(times_s, estimated_thrusts_n)
-    axes[2].set_xlabel("Time [s]")
-    axes[2].set_ylabel("Thrust [N]")
+    axes[2].plot(times_s, exhaust_temperatures_c)
+    axes[2].set_ylabel("EGT [°C]")
     axes[2].grid()
+
+    axes[3].plot(times_s, estimated_thrusts_n)
+    axes[3].set_xlabel("Time [s]")
+    axes[3].set_ylabel("Thrust [N]")
+    axes[3].grid()
 
     figure.suptitle("Mini-FADEC open-loop engine response")
     figure.tight_layout()
