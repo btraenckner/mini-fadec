@@ -12,6 +12,12 @@ def test_engine_starts_at_idle_speed() -> None:
     assert engine_model.state.rotor_speed_rpm == pytest.approx(39_000.0)
 
 
+def test_engine_starts_at_idle_exhaust_temperature() -> None:
+    engine_model = FirstOrderEngineModel()
+
+    assert engine_model.state.exhaust_temperature_c == pytest.approx(450.0)
+
+
 def test_full_fuel_command_accelerates_engine() -> None:
     engine_model = FirstOrderEngineModel()
     ambient_conditions = AmbientConditions()
@@ -30,6 +36,59 @@ def test_full_fuel_command_accelerates_engine() -> None:
 
     assert engine_model.state.rotor_speed_rpm > 123_000.0
     assert engine_model.state.rotor_speed_rpm < 128_000.0
+
+
+def test_full_fuel_command_increases_exhaust_temperature() -> None:
+    engine_model = FirstOrderEngineModel()
+
+    engine_model.step(
+        actuator_command=ActuatorCommand(
+            fuel_command=1.0,
+        ),
+        ambient_conditions=AmbientConditions(),
+        time_step_s=0.01,
+    )
+
+    assert engine_model.state.exhaust_temperature_c > 450.0
+
+
+def test_exhaust_temperature_approaches_maximum_target() -> None:
+    engine_model = FirstOrderEngineModel()
+    ambient_conditions = AmbientConditions()
+
+    time_step_s = 0.01
+    number_of_steps = int(1.5 / time_step_s)
+
+    for _ in range(number_of_steps):
+        engine_model.step(
+            actuator_command=ActuatorCommand(
+                fuel_command=1.0,
+            ),
+            ambient_conditions=ambient_conditions,
+            time_step_s=time_step_s,
+        )
+
+    assert engine_model.state.exhaust_temperature_c > 700.0
+    assert engine_model.state.exhaust_temperature_c < 720.0
+
+
+def test_zero_fuel_keeps_exhaust_temperature_at_idle() -> None:
+    engine_model = FirstOrderEngineModel()
+    ambient_conditions = AmbientConditions()
+
+    time_step_s = 0.01
+    number_of_steps = int(1.5 / time_step_s)
+
+    for _ in range(number_of_steps):
+        engine_model.step(
+            actuator_command=ActuatorCommand(
+                fuel_command=0.0,
+            ),
+            ambient_conditions=ambient_conditions,
+            time_step_s=time_step_s,
+        )
+
+    assert engine_model.state.exhaust_temperature_c == pytest.approx(450.0)
 
 
 def test_invalid_time_step_is_rejected() -> None:
