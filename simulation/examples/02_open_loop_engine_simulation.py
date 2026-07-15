@@ -66,6 +66,11 @@ def main() -> None:
     figure.suptitle("Mini-FADEC open-loop engine response")
     figure.tight_layout()
 
+    figure.savefig(
+        "results/02_open_loop_engine_response.png",
+        dpi=150,
+    )
+
     plt.show()
 
 

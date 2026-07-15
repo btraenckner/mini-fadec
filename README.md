@@ -34,7 +34,7 @@ Simulation and low-power demonstrators are used before safety-critical hardware 
 
 ## Repository Structure
 
-```text
+
 mini-fadec/
 ├── docs/          Project documentation and engineering decisions
 ├── embedded/      Embedded firmware and hardware-related software
@@ -42,7 +42,7 @@ mini-fadec/
 ├── tests/         Automated software and integration tests
 ├── .gitignore
 └── README.md
-```
+
 
 ## Current Status
 
