@@ -19,6 +19,8 @@ class EngineModelParameters:
     speed_time_constant_s: float = 1.0
 
     idle_exhaust_temperature_c: float = 450.0
+    maximum_exhaust_temperature_c: float = 720.0
+    exhaust_temperature_time_constant_s: float = 0.5
 
     idle_thrust_n: float = 6.0
     maximum_thrust_n: float = 140.0
@@ -73,6 +75,23 @@ class FirstOrderEngineModel:
         ) / self.parameters.speed_time_constant_s
 
         self._state.rotor_speed_rpm += speed_derivative_rpm_s * time_step_s
+
+        target_exhaust_temperature_c = (
+            self.parameters.idle_exhaust_temperature_c
+            + fuel_command
+            * (
+                self.parameters.maximum_exhaust_temperature_c
+                - self.parameters.idle_exhaust_temperature_c
+            )
+        )
+
+        exhaust_temperature_derivative_c_s = (
+            target_exhaust_temperature_c - self._state.exhaust_temperature_c
+        ) / self.parameters.exhaust_temperature_time_constant_s
+
+        self._state.exhaust_temperature_c += (
+            exhaust_temperature_derivative_c_s * time_step_s
+        )
 
         # Ambient conditions are not yet used by the first model version.
         _ = ambient_conditions
