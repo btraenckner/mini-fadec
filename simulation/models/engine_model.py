@@ -19,7 +19,10 @@ class EngineModelParameters:
     speed_time_constant_s: float = 1.0
 
     idle_exhaust_temperature_c: float = 450.0
-    maximum_exhaust_temperature_c: float = 720.0
+    # Initial grey-box assumptions; these values are not physically validated.
+    fuel_egt_heating_gain_c: float = 310.0
+    speed_egt_cooling_gain_c: float = 110.0
+    acceleration_egt_gain_c: float = 200.0
     exhaust_temperature_time_constant_s: float = 0.5
 
     idle_thrust_n: float = 6.0
@@ -76,13 +79,21 @@ class FirstOrderEngineModel:
 
         self._state.rotor_speed_rpm += speed_derivative_rpm_s * time_step_s
 
+        normalized_speed = self._normalized_speed()
+        steady_fuel_command = normalized_speed
+        excess_fuel_command = max(
+            fuel_command - steady_fuel_command,
+            0.0,
+        )
+        transient_heating_c = (
+            self.parameters.acceleration_egt_gain_c * excess_fuel_command
+        )
+
         target_exhaust_temperature_c = (
             self.parameters.idle_exhaust_temperature_c
-            + fuel_command
-            * (
-                self.parameters.maximum_exhaust_temperature_c
-                - self.parameters.idle_exhaust_temperature_c
-            )
+            + self.parameters.fuel_egt_heating_gain_c * fuel_command
+            - self.parameters.speed_egt_cooling_gain_c * normalized_speed
+            + transient_heating_c
         )
 
         exhaust_temperature_derivative_c_s = (
@@ -104,15 +115,7 @@ class FirstOrderEngineModel:
     ) -> EngineOutputs:
         """Calculate algebraic engine outputs."""
 
-        normalized_speed = (
-            self._state.rotor_speed_rpm - self.parameters.idle_speed_rpm
-        ) / (self.parameters.maximum_speed_rpm - self.parameters.idle_speed_rpm)
-
-        normalized_speed = self._clamp(
-            normalized_speed,
-            minimum=0.0,
-            maximum=1.0,
-        )
+        normalized_speed = self._normalized_speed()
 
         estimated_thrust_n = (
             self.parameters.idle_thrust_n
@@ -132,6 +135,19 @@ class FirstOrderEngineModel:
         return EngineOutputs(
             estimated_thrust_n=estimated_thrust_n,
             estimated_fuel_flow_ml_min=estimated_fuel_flow_ml_min,
+        )
+
+    def _normalized_speed(self) -> float:
+        """Return rotor speed normalized between idle and maximum speed."""
+
+        normalized_speed = (
+            self._state.rotor_speed_rpm - self.parameters.idle_speed_rpm
+        ) / (self.parameters.maximum_speed_rpm - self.parameters.idle_speed_rpm)
+
+        return self._clamp(
+            normalized_speed,
+            minimum=0.0,
+            maximum=1.0,
         )
 
     @staticmethod

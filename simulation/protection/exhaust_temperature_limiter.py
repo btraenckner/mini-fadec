@@ -9,8 +9,10 @@ from simulation.core.types import ActuatorCommand, SensorData
 class ExhaustTemperatureLimiterParameters:
     """Configuration parameters of the exhaust-temperature limiter."""
 
-    maximum_exhaust_temperature_c: float = 650.0
-    fuel_reduction_per_degree_c: float = 0.02
+    intervention_exhaust_temperature_c: float = 650.0
+    maximum_exhaust_temperature_c: float = 680.0
+    fuel_reduction_at_maximum_temperature: float = 0.6
+    overtemperature_fuel_reduction_per_degree_c: float = 0.04
     minimum_fuel_command: float = 0.0
     maximum_fuel_command: float = 1.0
 
@@ -35,13 +37,8 @@ class ExhaustTemperatureLimiter:
         if time_step_s <= 0.0:
             raise ValueError("time_step_s must be greater than zero")
 
-        temperature_excess_c = max(
+        fuel_reduction = self._calculate_fuel_reduction(
             sensor_data.exhaust_temperature_c
-            - self.parameters.maximum_exhaust_temperature_c,
-            0.0,
-        )
-        fuel_reduction = (
-            self.parameters.fuel_reduction_per_degree_c * temperature_excess_c
         )
         protected_fuel_command = requested_command.fuel_command - fuel_reduction
         protected_fuel_command = self._clamp(
@@ -51,6 +48,44 @@ class ExhaustTemperatureLimiter:
         )
 
         return ActuatorCommand(fuel_command=protected_fuel_command)
+
+    def _calculate_fuel_reduction(self, exhaust_temperature_c: float) -> float:
+        """Calculate progressive fuel reduction for the measured EGT."""
+
+        if exhaust_temperature_c <= (
+            self.parameters.intervention_exhaust_temperature_c
+        ):
+            return 0.0
+
+        intervention_range_c = (
+            self.parameters.maximum_exhaust_temperature_c
+            - self.parameters.intervention_exhaust_temperature_c
+        )
+        temperature_above_intervention_c = (
+            exhaust_temperature_c
+            - self.parameters.intervention_exhaust_temperature_c
+        )
+        intervention_fraction = self._clamp(
+            temperature_above_intervention_c / intervention_range_c,
+            minimum=0.0,
+            maximum=1.0,
+        )
+        fuel_reduction = (
+            self.parameters.fuel_reduction_at_maximum_temperature
+            * intervention_fraction
+        )
+
+        if exhaust_temperature_c > self.parameters.maximum_exhaust_temperature_c:
+            overtemperature_c = (
+                exhaust_temperature_c
+                - self.parameters.maximum_exhaust_temperature_c
+            )
+            fuel_reduction += (
+                self.parameters.overtemperature_fuel_reduction_per_degree_c
+                * overtemperature_c
+            )
+
+        return fuel_reduction
 
     @staticmethod
     def _clamp(value: float, minimum: float, maximum: float) -> float:
