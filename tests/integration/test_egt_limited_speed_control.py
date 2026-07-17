@@ -9,7 +9,7 @@ from simulation.protection.exhaust_temperature_limiter import (
 
 
 def test_egt_limiter_restricts_closed_loop_fuel_command() -> None:
-    engine_model = FirstOrderEngineModel()
+    engine_model = FirstOrderEngineModel.running_at_idle()
     controller = PIEngineSpeedController()
     limiter = ExhaustTemperatureLimiter()
     ambient_conditions = AmbientConditions()

@@ -11,7 +11,7 @@ from simulation.models.engine_model import FirstOrderEngineModel
 
 
 def test_controller_tracks_scheduled_rotor_speed() -> None:
-    engine_model = FirstOrderEngineModel()
+    engine_model = FirstOrderEngineModel.running_at_idle()
     scheduler = LinearThrottleToSpeedScheduler()
     controller = PIEngineSpeedController(scheduler=scheduler)
     ambient_conditions = AmbientConditions()

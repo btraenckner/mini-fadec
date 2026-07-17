@@ -6,20 +6,142 @@ from simulation.core.types import ActuatorCommand, AmbientConditions
 from simulation.models.engine_model import EngineModelParameters, FirstOrderEngineModel
 
 
-def test_engine_starts_at_idle_speed() -> None:
+def test_engine_starts_stopped_by_default() -> None:
     engine_model = FirstOrderEngineModel()
+
+    assert engine_model.state.rotor_speed_rpm == pytest.approx(0.0)
+    assert engine_model.state.exhaust_temperature_c == pytest.approx(15.0)
+
+
+def test_engine_starts_at_idle_speed() -> None:
+    engine_model = FirstOrderEngineModel.running_at_idle()
 
     assert engine_model.state.rotor_speed_rpm == pytest.approx(39_000.0)
 
 
 def test_engine_starts_at_idle_exhaust_temperature() -> None:
-    engine_model = FirstOrderEngineModel()
+    engine_model = FirstOrderEngineModel.running_at_idle()
 
     assert engine_model.state.exhaust_temperature_c == pytest.approx(450.0)
 
 
-def test_full_fuel_command_accelerates_engine() -> None:
+def test_starter_command_accelerates_stopped_rotor() -> None:
     engine_model = FirstOrderEngineModel()
+
+    engine_model.step(
+        actuator_command=ActuatorCommand(
+            fuel_command=0.0,
+            starter_commanded=True,
+            fuel_enabled=False,
+        ),
+        ambient_conditions=AmbientConditions(),
+        time_step_s=0.1,
+    )
+
+    assert engine_model.state.rotor_speed_rpm > 0.0
+
+
+def test_no_starter_and_no_fuel_keep_engine_stopped() -> None:
+    engine_model = FirstOrderEngineModel()
+
+    for _ in range(100):
+        engine_model.step(
+            actuator_command=ActuatorCommand(
+                fuel_command=0.0,
+                fuel_enabled=False,
+            ),
+            ambient_conditions=AmbientConditions(),
+            time_step_s=0.01,
+        )
+
+    assert engine_model.state.rotor_speed_rpm == pytest.approx(0.0)
+    assert engine_model.state.exhaust_temperature_c == pytest.approx(15.0)
+
+
+def test_ignition_and_fuel_below_ignition_speed_do_not_light_engine() -> None:
+    engine_model = FirstOrderEngineModel()
+
+    for _ in range(100):
+        engine_model.step(
+            actuator_command=ActuatorCommand(
+                fuel_command=0.25,
+                ignition_commanded=True,
+            ),
+            ambient_conditions=AmbientConditions(),
+            time_step_s=0.01,
+        )
+
+    assert engine_model.state.rotor_speed_rpm == pytest.approx(0.0)
+    assert engine_model.state.exhaust_temperature_c == pytest.approx(15.0)
+
+
+def test_ignition_and_start_fuel_at_cranking_speed_raise_temperature() -> None:
+    engine_model = FirstOrderEngineModel()
+    ambient_conditions = AmbientConditions()
+    time_step_s = 0.01
+
+    while engine_model.state.rotor_speed_rpm < 15_000.0:
+        engine_model.step(
+            actuator_command=ActuatorCommand(
+                fuel_command=0.0,
+                starter_commanded=True,
+                fuel_enabled=False,
+            ),
+            ambient_conditions=ambient_conditions,
+            time_step_s=time_step_s,
+        )
+
+    temperature_before_ignition_c = engine_model.state.exhaust_temperature_c
+
+    for _ in range(100):
+        engine_model.step(
+            actuator_command=ActuatorCommand(
+                fuel_command=0.25,
+                starter_commanded=True,
+                ignition_commanded=True,
+            ),
+            ambient_conditions=ambient_conditions,
+            time_step_s=time_step_s,
+        )
+
+    assert (
+        engine_model.state.exhaust_temperature_c
+        > temperature_before_ignition_c
+    )
+    assert engine_model.state.rotor_speed_rpm > 15_000.0
+
+
+def test_fuel_cutoff_causes_spool_down_and_temperature_decay() -> None:
+    engine_model = FirstOrderEngineModel.running_at_idle()
+    ambient_conditions = AmbientConditions()
+    time_step_s = 0.01
+
+    for _ in range(100):
+        engine_model.step(
+            actuator_command=ActuatorCommand(fuel_command=1.0),
+            ambient_conditions=ambient_conditions,
+            time_step_s=time_step_s,
+        )
+
+    speed_before_cutoff_rpm = engine_model.state.rotor_speed_rpm
+    temperature_before_cutoff_c = engine_model.state.exhaust_temperature_c
+
+    for _ in range(100):
+        engine_model.step(
+            actuator_command=ActuatorCommand(
+                fuel_command=0.0,
+                fuel_enabled=False,
+            ),
+            ambient_conditions=ambient_conditions,
+            time_step_s=time_step_s,
+        )
+
+    assert engine_model.state.rotor_speed_rpm < speed_before_cutoff_rpm
+    assert engine_model.state.exhaust_temperature_c < temperature_before_cutoff_c
+
+
+def test_full_fuel_command_accelerates_engine() -> None:
+    engine_model = FirstOrderEngineModel.running_at_idle()
     ambient_conditions = AmbientConditions()
 
     time_step_s = 0.01
@@ -39,8 +161,8 @@ def test_full_fuel_command_accelerates_engine() -> None:
 
 
 def test_higher_fuel_command_increases_exhaust_temperature() -> None:
-    lower_fuel_engine_model = FirstOrderEngineModel()
-    higher_fuel_engine_model = FirstOrderEngineModel()
+    lower_fuel_engine_model = FirstOrderEngineModel.running_at_idle()
+    higher_fuel_engine_model = FirstOrderEngineModel.running_at_idle()
 
     lower_fuel_engine_model.step(
         actuator_command=ActuatorCommand(
@@ -64,7 +186,7 @@ def test_higher_fuel_command_increases_exhaust_temperature() -> None:
 
 
 def test_full_fuel_command_causes_transient_exhaust_temperature_peak() -> None:
-    engine_model = FirstOrderEngineModel()
+    engine_model = FirstOrderEngineModel.running_at_idle()
     ambient_conditions = AmbientConditions()
 
     time_step_s = 0.01
@@ -83,8 +205,8 @@ def test_full_fuel_command_causes_transient_exhaust_temperature_peak() -> None:
 
 
 def test_increasing_rotor_speed_reduces_exhaust_temperature() -> None:
-    low_speed_engine_model = FirstOrderEngineModel()
-    high_speed_engine_model = FirstOrderEngineModel()
+    low_speed_engine_model = FirstOrderEngineModel.running_at_idle()
+    high_speed_engine_model = FirstOrderEngineModel.running_at_idle()
     low_speed_engine_model.state.exhaust_temperature_c = 600.0
     high_speed_engine_model.state.exhaust_temperature_c = 600.0
     high_speed_engine_model.state.rotor_speed_rpm = 128_000.0
@@ -103,8 +225,8 @@ def test_increasing_rotor_speed_reduces_exhaust_temperature() -> None:
 
 
 def test_excess_fuel_adds_transient_exhaust_heating() -> None:
-    engine_model = FirstOrderEngineModel()
-    engine_model_without_transient_heating = FirstOrderEngineModel(
+    engine_model = FirstOrderEngineModel.running_at_idle()
+    engine_model_without_transient_heating = FirstOrderEngineModel.running_at_idle(
         parameters=EngineModelParameters(acceleration_egt_gain_c=0.0)
     )
 
@@ -132,7 +254,7 @@ def test_exhaust_temperature_settles_with_speed_cooling(
     fuel_command: float,
     expected_exhaust_temperature_c: float,
 ) -> None:
-    engine_model = FirstOrderEngineModel()
+    engine_model = FirstOrderEngineModel.running_at_idle()
     time_step_s = 0.01
 
     for _ in range(int(10.0 / time_step_s)):
@@ -149,7 +271,7 @@ def test_exhaust_temperature_settles_with_speed_cooling(
 
 
 def test_zero_fuel_keeps_exhaust_temperature_at_idle() -> None:
-    engine_model = FirstOrderEngineModel()
+    engine_model = FirstOrderEngineModel.running_at_idle()
     ambient_conditions = AmbientConditions()
 
     time_step_s = 0.01
@@ -168,7 +290,7 @@ def test_zero_fuel_keeps_exhaust_temperature_at_idle() -> None:
 
 
 def test_invalid_time_step_is_rejected() -> None:
-    engine_model = FirstOrderEngineModel()
+    engine_model = FirstOrderEngineModel.running_at_idle()
 
     with pytest.raises(
         ValueError,
