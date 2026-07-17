@@ -29,10 +29,13 @@ class EngineSimulationSnapshot:
     previous_operating_state: EngineOperatingState
     operating_state: EngineOperatingState
     throttle_command: float
+    speed_setpoint_rpm: float
     rotor_speed_rpm: float
     exhaust_temperature_c: float
     requested_fuel_command: float
     allowed_fuel_command: float
+    estimated_thrust_n: float
+    estimated_fuel_flow_ml_min: float
     starter_commanded: bool
     ignition_commanded: bool
     speed_control_enabled: bool
@@ -100,7 +103,7 @@ class EngineSimulationCoordinator:
             time_step_s=time_step_s,
         )
 
-        self.engine_model.step(
+        engine_outputs = self.engine_model.step(
             actuator_command=allowed_command,
             ambient_conditions=self.ambient_conditions,
             time_step_s=time_step_s,
@@ -117,12 +120,17 @@ class EngineSimulationCoordinator:
             previous_operating_state=previous_operating_state,
             operating_state=operating_command.state,
             throttle_command=operating_command.effective_throttle_command,
+            speed_setpoint_rpm=self._speed_setpoint_rpm(operating_command),
             rotor_speed_rpm=self.engine_model.state.rotor_speed_rpm,
             exhaust_temperature_c=(
                 self.engine_model.state.exhaust_temperature_c
             ),
             requested_fuel_command=requested_command.fuel_command,
             allowed_fuel_command=allowed_command.fuel_command,
+            estimated_thrust_n=engine_outputs.estimated_thrust_n,
+            estimated_fuel_flow_ml_min=(
+                engine_outputs.estimated_fuel_flow_ml_min
+            ),
             starter_commanded=allowed_command.starter_commanded,
             ignition_commanded=allowed_command.ignition_commanded,
             speed_control_enabled=operating_command.speed_control_enabled,
@@ -181,6 +189,19 @@ class EngineSimulationCoordinator:
             time_step_s=time_step_s,
         )
 
+    def _speed_setpoint_rpm(
+        self,
+        operating_command: EngineOperatingCommand,
+    ) -> float:
+        """Return the scheduled setpoint when speed control is enabled."""
+
+        if not operating_command.speed_control_enabled:
+            return 0.0
+
+        return self.speed_controller.scheduler.get_speed_setpoint_rpm(
+            operating_command.effective_throttle_command
+        )
+
     def _sensor_data(self) -> SensorData:
         """Create ideal sensor data from the current engine state."""
 
@@ -197,10 +218,13 @@ class EngineSimulationCoordinator:
             previous_operating_state=EngineOperatingState.OFF,
             operating_state=EngineOperatingState.OFF,
             throttle_command=0.0,
+            speed_setpoint_rpm=0.0,
             rotor_speed_rpm=self.engine_model.state.rotor_speed_rpm,
             exhaust_temperature_c=self.engine_model.state.exhaust_temperature_c,
             requested_fuel_command=0.0,
             allowed_fuel_command=0.0,
+            estimated_thrust_n=0.0,
+            estimated_fuel_flow_ml_min=0.0,
             starter_commanded=False,
             ignition_commanded=False,
             speed_control_enabled=False,
