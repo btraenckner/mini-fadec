@@ -19,7 +19,7 @@ def throttle_command_schedule(time_s: float) -> float:
 
     if time_s < 1.0:
         return 0.0
-    if time_s < 8.0:
+    if time_s < 12.0:
         return 1.0
 
     return 0.3
@@ -27,7 +27,7 @@ def throttle_command_schedule(time_s: float) -> float:
 
 def main() -> None:
     time_step_s = 0.01
-    simulation_duration_s = 10.0
+    simulation_duration_s = 15.0
 
     engine_model = FirstOrderEngineModel()
     scheduler = LinearThrottleToSpeedScheduler()
@@ -104,6 +104,12 @@ def main() -> None:
     axes[2].grid()
 
     axes[3].plot(times_s, exhaust_temperatures_c, label="EGT")
+    axes[3].axhline(
+        limiter.parameters.intervention_exhaust_temperature_c,
+        color="tab:orange",
+        linestyle="--",
+        label="Intervention",
+    )
     axes[3].axhline(
         limiter.parameters.maximum_exhaust_temperature_c,
         color="tab:red",
