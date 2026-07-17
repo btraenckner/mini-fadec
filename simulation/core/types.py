@@ -47,3 +47,6 @@ class ActuatorCommand:
     """Commands sent by the controller to engine actuators."""
 
     fuel_command: float
+    starter_commanded: bool = False
+    ignition_commanded: bool = False
+    fuel_enabled: bool = True

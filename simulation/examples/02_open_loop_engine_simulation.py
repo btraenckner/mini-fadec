@@ -20,7 +20,7 @@ def main() -> None:
     time_step_s = 0.01
     simulation_duration_s = 6.0
 
-    engine_model = FirstOrderEngineModel()
+    engine_model = FirstOrderEngineModel.running_at_idle()
     ambient_conditions = AmbientConditions()
 
     times_s = np.arange(
