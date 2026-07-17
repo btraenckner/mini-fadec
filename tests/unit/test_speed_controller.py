@@ -60,3 +60,35 @@ def test_controller_rejects_invalid_time_step() -> None:
             ),
             time_step_s=0.0,
         )
+
+
+def test_controller_reset_clears_accumulated_integral_state() -> None:
+    controller = PIEngineSpeedController()
+    control_request = ControlRequest(throttle_command=0.5)
+    sensor_data = SensorData(
+        rotor_speed_rpm=83_000.0,
+        exhaust_temperature_c=550.0,
+    )
+
+    controller.update(
+        control_request=control_request,
+        sensor_data=sensor_data,
+        time_step_s=1.0,
+    )
+    controller.reset()
+    command_after_reset = controller.update(
+        control_request=control_request,
+        sensor_data=sensor_data,
+        time_step_s=0.01,
+    )
+
+    fresh_controller = PIEngineSpeedController()
+    fresh_command = fresh_controller.update(
+        control_request=control_request,
+        sensor_data=sensor_data,
+        time_step_s=0.01,
+    )
+
+    assert command_after_reset.fuel_command == pytest.approx(
+        fresh_command.fuel_command
+    )

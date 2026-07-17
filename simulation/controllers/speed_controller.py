@@ -54,6 +54,11 @@ class PIEngineSpeedController:
         self.parameters = parameters or SpeedControllerParameters()
         self._integral_error = 0.0
 
+    def reset(self) -> None:
+        """Reset accumulated controller state."""
+
+        self._integral_error = 0.0
+
     def update(
         self,
         control_request: ControlRequest,

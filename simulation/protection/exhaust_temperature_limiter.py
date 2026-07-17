@@ -47,7 +47,12 @@ class ExhaustTemperatureLimiter:
             maximum=self.parameters.maximum_fuel_command,
         )
 
-        return ActuatorCommand(fuel_command=protected_fuel_command)
+        return ActuatorCommand(
+            fuel_command=protected_fuel_command,
+            starter_commanded=requested_command.starter_commanded,
+            ignition_commanded=requested_command.ignition_commanded,
+            fuel_enabled=requested_command.fuel_enabled,
+        )
 
     def _calculate_fuel_reduction(self, exhaust_temperature_c: float) -> float:
         """Calculate progressive fuel reduction for the measured EGT."""

@@ -26,7 +26,7 @@ def main() -> None:
     time_step_s = 0.01
     simulation_duration_s = 10.0
 
-    engine_model = FirstOrderEngineModel()
+    engine_model = FirstOrderEngineModel.running_at_idle()
     scheduler = LinearThrottleToSpeedScheduler()
     controller = PIEngineSpeedController(scheduler=scheduler)
     ambient_conditions = AmbientConditions()
