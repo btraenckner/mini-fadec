@@ -14,6 +14,15 @@ from simulation.application.engine_simulation import (
 )
 from simulation.operation.engine_state import EngineOperatingState
 from simulation.operation.state_machine import EngineOperationRequest
+from simulation.sensors.fault_injection import (
+    BiasSensorFault,
+    DriftSensorFault,
+    DropoutSensorFault,
+    ExcessiveNoiseSensorFault,
+    ForcedValueSensorFault,
+    SensorChannel,
+    StuckSensorFault,
+)
 
 
 @dataclass(frozen=True)
@@ -21,6 +30,7 @@ class ParsedCommand:
     """Parsed terminal command with an optional numeric value."""
 
     name: str
+    argument: str | None = None
     value: float | None = None
 
 
@@ -38,7 +48,9 @@ def parse_command(command_text: str) -> ParsedCommand:
         "shutdown",
         "status",
         "fault",
+        "faults",
         "reset",
+        "clear_faults",
         "quit",
     }
     if command_name in commands_without_values:
@@ -55,7 +67,59 @@ def parse_command(command_text: str) -> ParsedCommand:
             raise ValueError("throttle value must be numeric") from error
         return ParsedCommand(name=command_name, value=throttle_command)
 
+    if command_name == "clear_fault":
+        if len(command_parts) != 2 or command_parts[1] not in {"rpm", "egt"}:
+            raise ValueError("usage: clear_fault <rpm|egt>")
+        return ParsedCommand(name=command_name, argument=command_parts[1])
+
+    if command_name == "inject":
+        return _parse_inject_command(command_parts)
+
     raise ValueError(f"unknown command: {command_name}")
+
+
+def _parse_inject_command(command_parts: list[str]) -> ParsedCommand:
+    """Parse one sensor fault-injection command."""
+
+    if len(command_parts) < 2:
+        raise ValueError("usage: inject <fault> [value]")
+
+    fault_name = command_parts[1]
+    faults_requiring_value = {
+        "rpm_bias",
+        "egt_bias",
+        "rpm_value",
+        "egt_value",
+        "rpm_noise",
+        "egt_noise",
+        "rpm_drift",
+        "egt_drift",
+    }
+    stuck_faults = {"rpm_stuck", "egt_stuck"}
+    dropout_faults = {"rpm_dropout", "egt_dropout"}
+
+    if fault_name in faults_requiring_value:
+        if len(command_parts) != 3:
+            raise ValueError(f"usage: inject {fault_name} <value>")
+    elif fault_name in stuck_faults:
+        if len(command_parts) not in {2, 3}:
+            raise ValueError(f"usage: inject {fault_name} [value]")
+    elif fault_name in dropout_faults:
+        if len(command_parts) != 2:
+            raise ValueError(f"inject {fault_name} does not accept a value")
+    else:
+        raise ValueError(f"unknown sensor fault: {fault_name}")
+
+    value = None
+    if len(command_parts) == 3:
+        try:
+            value = float(command_parts[2])
+        except ValueError as error:
+            raise ValueError("sensor fault value must be numeric") from error
+        if fault_name.endswith("_noise") and value < 0.0:
+            raise ValueError("sensor fault noise cannot be negative")
+
+    return ParsedCommand(name="inject", argument=fault_name, value=value)
 
 
 class InteractiveEngineSimulation:
@@ -79,6 +143,7 @@ class InteractiveEngineSimulation:
         self._command_queue: Queue[str | None] = Queue()
         self._throttle_command = 0.0
         self._running = True
+        self._printed_event_count = 0
 
     def run(self) -> None:
         """Run continuously with wall-clock pacing and non-blocking input."""
@@ -101,6 +166,7 @@ class InteractiveEngineSimulation:
                     time_step_s=self.time_step_s,
                 )
                 self._print_transition(snapshot)
+                self._print_new_events()
 
                 if snapshot.simulation_time_s >= next_telemetry_time_s:
                     self._print_status(snapshot)
@@ -164,8 +230,17 @@ class InteractiveEngineSimulation:
                 self._print_status(self.coordinator.snapshot)
             elif command.name == "fault":
                 fault_requested = True
+            elif command.name == "faults":
+                self._print_faults()
             elif command.name == "reset":
                 reset_requested = True
+            elif command.name == "inject":
+                self._inject_sensor_fault(command)
+            elif command.name == "clear_fault":
+                self._clear_sensor_fault(command)
+            elif command.name == "clear_faults":
+                self.coordinator.clear_sensor_faults()
+                self._print("Cleared all injected sensor faults")
             elif command.name == "quit":
                 self._running = False
                 break
@@ -177,6 +252,78 @@ class InteractiveEngineSimulation:
             fault_requested=fault_requested,
             reset_requested=reset_requested,
         )
+
+    def _inject_sensor_fault(self, command: ParsedCommand) -> None:
+        """Convert a parsed request into one typed sensor fault definition."""
+
+        assert command.argument is not None
+        channel = (
+            SensorChannel.ROTOR_SPEED
+            if command.argument.startswith("rpm_")
+            else SensorChannel.EXHAUST_TEMPERATURE
+        )
+        fault_kind = command.argument.split("_", maxsplit=1)[1]
+
+        if fault_kind == "bias":
+            assert command.value is not None
+            fault = BiasSensorFault(offset=command.value)
+        elif fault_kind == "stuck":
+            fault = StuckSensorFault(value=command.value)
+        elif fault_kind == "dropout":
+            fault = DropoutSensorFault()
+        elif fault_kind == "value":
+            assert command.value is not None
+            fault = ForcedValueSensorFault(value=command.value)
+        elif fault_kind == "noise":
+            assert command.value is not None
+            fault = ExcessiveNoiseSensorFault(
+                standard_deviation=command.value
+            )
+        else:
+            assert command.value is not None
+            fault = DriftSensorFault(rate_per_second=command.value)
+
+        self.coordinator.inject_sensor_fault(channel, fault)
+        self._print(
+            f"Injected {channel.value} sensor fault: "
+            f"{self.coordinator.sensor_fault_injector.describe(channel)}"
+        )
+
+    def _clear_sensor_fault(self, command: ParsedCommand) -> None:
+        """Clear the requested injected sensor fault channel."""
+
+        assert command.argument is not None
+        channel = (
+            SensorChannel.ROTOR_SPEED
+            if command.argument == "rpm"
+            else SensorChannel.EXHAUST_TEMPERATURE
+        )
+        self.coordinator.clear_sensor_fault(channel)
+        self._print(f"Cleared {channel.value} sensor fault")
+
+    def _print_faults(self) -> None:
+        """Print active injected faults and current validator health."""
+
+        snapshot = self.coordinator.snapshot
+        self._print(
+            "Rotor-speed fault: "
+            f"{self.coordinator.sensor_fault_injector.describe(SensorChannel.ROTOR_SPEED)} | "
+            f"health: {snapshot.rotor_speed_health.value}\n"
+            "EGT fault: "
+            f"{self.coordinator.sensor_fault_injector.describe(SensorChannel.EXHAUST_TEMPERATURE)} | "
+            f"health: {snapshot.exhaust_temperature_health.value}\n"
+            f"Aggregate sensor health: {snapshot.aggregate_sensor_health.value}"
+        )
+
+    def _print_new_events(self) -> None:
+        """Print newly recorded simulation events once."""
+
+        events = self.coordinator.event_log.events
+        for event in events[self._printed_event_count :]:
+            self._print(
+                f"EVENT t={event.simulation_time_s:.2f} s: {event.message}"
+            )
+        self._printed_event_count = len(events)
 
     def _print_transition(self, snapshot: EngineSimulationSnapshot) -> None:
         """Print a state transition immediately when one occurs."""
@@ -194,20 +341,30 @@ class InteractiveEngineSimulation:
         self._print(
             f"t={snapshot.simulation_time_s:6.2f} s | "
             f"state={snapshot.operating_state.value:8s} | "
-            f"throttle={self._throttle_command:.3f} | "
-            f"true/measured speed={snapshot.rotor_speed_rpm:9.0f}/"
-            f"{snapshot.measured_rotor_speed_rpm:9.0f} rpm | "
-            f"error={snapshot.rotor_speed_measurement_error_rpm:+6.0f} rpm\n"
-            f"true/measured EGT={snapshot.exhaust_temperature_c:6.1f}/"
-            f"{snapshot.measured_exhaust_temperature_c:6.1f} °C | "
-            f"error={snapshot.exhaust_temperature_measurement_error_c:+5.1f} °C | "
+            f"throttle={self._throttle_command:.3f}\n"
+            "Rotor speed: "
+            f"truth={snapshot.rotor_speed_rpm:.0f} rpm | "
+            f"raw={self._format_value(snapshot.measured_rotor_speed_rpm, '.0f')} | "
+            f"validated={self._format_validated_value(snapshot.validated_rotor_speed_rpm, snapshot.rotor_speed_value_is_held, '.0f')} | "
+            f"error={self._format_value(snapshot.rotor_speed_measurement_error_rpm, '+.0f')} | "
+            f"health={snapshot.rotor_speed_health.value} | "
+            f"fault={snapshot.rotor_speed_fault} | "
+            f"diagnostic={snapshot.rotor_speed_diagnostic_reason.value}\n"
+            "EGT: "
+            f"truth={snapshot.exhaust_temperature_c:.1f} °C | "
+            f"raw={self._format_value(snapshot.measured_exhaust_temperature_c, '.1f')} | "
+            f"validated={self._format_validated_value(snapshot.validated_exhaust_temperature_c, snapshot.exhaust_temperature_value_is_held, '.1f')} | "
+            f"error={self._format_value(snapshot.exhaust_temperature_measurement_error_c, '+.1f')} | "
+            f"health={snapshot.exhaust_temperature_health.value} | "
+            f"fault={snapshot.exhaust_temperature_fault} | "
+            f"diagnostic={snapshot.exhaust_temperature_diagnostic_reason.value}\n"
+            f"Sensor health={snapshot.aggregate_sensor_health.value} | "
+            f"automatic FAULT={snapshot.automatic_sensor_fault_request_active} | "
+            f"response={snapshot.sensor_fault_response_reason.value} | "
             f"sample periods={snapshot.rotor_speed_sensor_sample_period_s:.3f}/"
             f"{snapshot.exhaust_temperature_sensor_sample_period_s:.3f} s | "
             f"fuel={snapshot.requested_fuel_command:.3f}/"
-            f"{snapshot.allowed_fuel_command:.3f} | "
-            f"starter={snapshot.starter_commanded} | "
-            f"ignition={snapshot.ignition_commanded} | "
-            f"EGT-limit={snapshot.egt_limiter_active}"
+            f"{snapshot.allowed_fuel_command:.3f}"
         )
 
     def _print_help(self) -> None:
@@ -215,8 +372,29 @@ class InteractiveEngineSimulation:
 
         self._print(
             "Commands: help, start, throttle <0.0..1.0>, shutdown, "
-            "status, fault, reset, quit"
+            "status, fault, reset, faults, inject <fault> [value], "
+            "clear_fault <rpm|egt>, clear_faults, quit"
         )
+
+    @staticmethod
+    def _format_value(value: float | None, format_specification: str) -> str:
+        """Format an optional raw value without converting dropout to zero."""
+
+        if value is None:
+            return "unavailable"
+        return format(value, format_specification)
+
+    @classmethod
+    def _format_validated_value(
+        cls,
+        value: float | None,
+        value_is_held: bool,
+        format_specification: str,
+    ) -> str:
+        """Format an optional validated value and identify held fallback."""
+
+        formatted_value = cls._format_value(value, format_specification)
+        return f"{formatted_value} held" if value_is_held else formatted_value
 
     def _print(self, message: str) -> None:
         """Print to the configured application output stream."""

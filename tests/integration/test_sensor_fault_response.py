@@ -125,6 +125,11 @@ def test_rotor_speed_dropout_during_running_requests_fault_and_cuts_fuel() -> No
     assert snapshot.fuel_enabled is False
     assert snapshot.fuel_cutoff_due_to_sensor_invalidity
     assert controller.received_sensor_data == []
+    event_messages = [event.message for event in coordinator.event_log.events]
+    assert any("Injected rpm sensor fault" in message for message in event_messages)
+    assert any("VALID -> INVALID" in message for message in event_messages)
+    assert any("Automatic FAULT request" in message for message in event_messages)
+    assert any("Fuel cut off" in message for message in event_messages)
 
 
 def test_egt_dropout_during_running_requests_fault_and_cuts_fuel() -> None:
@@ -185,6 +190,10 @@ def test_fault_clear_requires_validation_recovery_before_safe_reset() -> None:
         if snapshot.rotor_speed_rpm <= 500.0:
             break
     coordinator.clear_sensor_fault(SensorChannel.ROTOR_SPEED)
+    assert any(
+        "Cleared rpm sensor fault" in event.message
+        for event in coordinator.event_log.events
+    )
 
     recovering_snapshot = coordinator.step(
         EngineOperationRequest(reset_requested=True),

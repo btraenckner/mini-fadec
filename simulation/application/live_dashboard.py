@@ -125,10 +125,10 @@ class LiveEngineDashboard:
             0.025,
             0.84,
             "",
-            fontsize=10,
+            fontsize=9,
             family="monospace",
             verticalalignment="top",
-            linespacing=1.5,
+            linespacing=1.25,
         )
         self._transition_text = self._figure.text(
             0.025,
@@ -217,6 +217,12 @@ class LiveEngineDashboard:
             [],
             label="Measured",
         )
+        (self._validated_rotor_speed_line,) = speed_axis.plot(
+            [],
+            [],
+            linestyle=":",
+            label="Validated",
+        )
         speed_axis.set_ylabel("Rotor speed\n[rpm]")
         speed_axis.set_ylim(0.0, 135_000.0)
         speed_axis.legend(loc="upper left")
@@ -226,6 +232,12 @@ class LiveEngineDashboard:
             [],
             [],
             label="Measured EGT",
+        )
+        (self._validated_egt_line,) = egt_axis.plot(
+            [],
+            [],
+            linestyle=":",
+            label="Validated EGT",
         )
         egt_axis.axhline(
             self.dashboard_simulation.coordinator.egt_limiter.parameters.intervention_exhaust_temperature_c,
@@ -298,6 +310,11 @@ class LiveEngineDashboard:
             history.measured_rotor_speeds_rpm,
         )
         self._set_line_data(
+            self._validated_rotor_speed_line,
+            history.times_s,
+            history.validated_rotor_speeds_rpm,
+        )
+        self._set_line_data(
             self._egt_line,
             history.times_s,
             history.exhaust_temperatures_c,
@@ -306,6 +323,11 @@ class LiveEngineDashboard:
             self._measured_egt_line,
             history.times_s,
             history.measured_exhaust_temperatures_c,
+        )
+        self._set_line_data(
+            self._validated_egt_line,
+            history.times_s,
+            history.validated_exhaust_temperatures_c,
         )
         self._set_line_data(
             self._requested_fuel_line,
@@ -346,12 +368,22 @@ class LiveEngineDashboard:
         self._telemetry_text.set_text(
             f"Time       {snapshot.simulation_time_s:7.2f} s\n"
             f"Throttle   {self.dashboard_simulation.controls.throttle_command:7.3f}\n"
-            f"RPM T/M/E  {snapshot.rotor_speed_rpm:7.0f}/"
-            f"{snapshot.measured_rotor_speed_rpm:.0f}/"
-            f"{snapshot.rotor_speed_measurement_error_rpm:+.0f}\n"
-            f"EGT T/M/E  {snapshot.exhaust_temperature_c:7.1f}/"
-            f"{snapshot.measured_exhaust_temperature_c:.1f}/"
-            f"{snapshot.exhaust_temperature_measurement_error_c:+.1f} °C\n"
+            f"RPM T/R/V  {snapshot.rotor_speed_rpm:7.0f}/"
+            f"{self._display_value(snapshot.measured_rotor_speed_rpm, '.0f')}/"
+            f"{self._display_value(snapshot.validated_rotor_speed_rpm, '.0f')}\n"
+            f"RPM health {snapshot.rotor_speed_health.value:>7s} "
+            f"err {self._display_value(snapshot.rotor_speed_measurement_error_rpm, '+.0f')} "
+            f"({snapshot.rotor_speed_fault}; "
+            f"{snapshot.rotor_speed_diagnostic_reason.value})\n"
+            f"EGT T/R/V  {snapshot.exhaust_temperature_c:7.1f}/"
+            f"{self._display_value(snapshot.measured_exhaust_temperature_c, '.1f')}/"
+            f"{self._display_value(snapshot.validated_exhaust_temperature_c, '.1f')}\n"
+            f"EGT health {snapshot.exhaust_temperature_health.value:>7s} "
+            f"err {self._display_value(snapshot.exhaust_temperature_measurement_error_c, '+.1f')} "
+            f"({snapshot.exhaust_temperature_fault}; "
+            f"{snapshot.exhaust_temperature_diagnostic_reason.value})\n"
+            f"Sensors    {snapshot.aggregate_sensor_health.value:>7s} | "
+            f"Auto FAULT {self._on_off(snapshot.automatic_sensor_fault_request_active)}\n"
             f"Sample R/E {snapshot.rotor_speed_sensor_sample_period_s:7.3f}/"
             f"{snapshot.exhaust_temperature_sensor_sample_period_s:.3f} s\n"
             f"Fuel req.  {snapshot.requested_fuel_command:7.3f}\n"
@@ -410,11 +442,22 @@ class LiveEngineDashboard:
     def _set_line_data(
         line: Line2D,
         times_s: list[float],
-        values: list[float],
+        values: list[float | None],
     ) -> None:
         """Set both axes of one live signal line."""
 
         line.set_data(times_s, values)
+
+    @staticmethod
+    def _display_value(
+        value: float | None,
+        format_specification: str,
+    ) -> str:
+        """Format optional dashboard telemetry without hiding dropout."""
+
+        if value is None:
+            return "--"
+        return format(value, format_specification)
 
     @staticmethod
     def _on_off(value: bool) -> str:
