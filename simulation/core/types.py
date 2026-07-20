@@ -36,6 +36,14 @@ class SensorData:
 
 
 @dataclass(frozen=True)
+class RawSensorData:
+    """Possibly unavailable sensor values before signal validation."""
+
+    rotor_speed_rpm: float | None
+    exhaust_temperature_c: float | None
+
+
+@dataclass(frozen=True)
 class ControlRequest:
     """Requested engine operating point."""
 
