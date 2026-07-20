@@ -105,7 +105,7 @@ def test_excessive_rotor_speed_rate_is_detected() -> None:
     validator.update(VALID_RAW_DATA, OFF_CONTEXT, time_step_s=0.01)
 
     result = validator.update(
-        replace(VALID_RAW_DATA, rotor_speed_rpm=51_000.0),
+        replace(VALID_RAW_DATA, rotor_speed_rpm=52_000.0),
         OFF_CONTEXT,
         time_step_s=0.01,
     )

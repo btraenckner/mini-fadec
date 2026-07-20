@@ -33,8 +33,8 @@ class RotorSpeedValidationConfiguration:
 
     minimum_value_rpm: float = 0.0
     maximum_value_rpm: float = 145_000.0
-    maximum_absolute_rate_rpm_s: float = 80_000.0
-    minimum_stuck_change_rpm: float = 10.0
+    maximum_absolute_rate_rpm_s: float = 100_000.0
+    minimum_stuck_change_rpm: float = 1.0
     stuck_persistence_s: float = 0.25
     violation_persistence_s: float = 0.10
     unavailable_persistence_s: float = 0.0
@@ -62,8 +62,8 @@ class ExhaustTemperatureValidationConfiguration:
 
     minimum_value_c: float = -50.0
     maximum_value_c: float = 950.0
-    maximum_absolute_rate_c_s: float = 1_000.0
-    minimum_stuck_change_c: float = 0.25
+    maximum_absolute_rate_c_s: float = 1_500.0
+    minimum_stuck_change_c: float = 0.01
     stuck_persistence_s: float = 0.25
     violation_persistence_s: float = 0.10
     unavailable_persistence_s: float = 0.0
@@ -383,8 +383,9 @@ class SensorSignalValidator:
                 time_step_s=time_step_s,
             )
 
-        state.last_accepted_value = value
-        state.elapsed_since_accepted_value_s = 0.0
+        if state.last_accepted_value is None or value != state.last_accepted_value:
+            state.last_accepted_value = value
+            state.elapsed_since_accepted_value_s = 0.0
         return self._apply_valid_measurement(
             value=value,
             state=state,
