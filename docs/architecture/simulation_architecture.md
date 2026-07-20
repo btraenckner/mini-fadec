@@ -2,217 +2,97 @@
 
 ## Purpose
 
-The simulation environment provides a modular platform for developing and testing Mini-FADEC control functions before they are implemented on embedded hardware.
+The simulation provides modular plant, control, protection, and operator layers
+for Mini-FADEC development. The engine remains a deliberately simplified
+single-spool grey-box model rather than a validated thermodynamic model.
 
-The initial simulation represents the running operation of a small single-spool model gas turbine. It is intentionally simplified and is intended for controller development, software testing, and later software-in-the-loop and hardware-in-the-loop integration.
+## Signal Architecture
 
-## Architecture Overview
+Closed-loop operation separates physical truth from the signals observed by
+the FADEC:
 
-The simulation is divided into independent functional modules:
+```text
+Operator request
+      |
+      v
+State machine -> speed controller -> EGT protection -> actuator command
+      ^                 ^                 ^                  |
+      |                 |                 |                  v
+      +---------- SensorData <--- Sensor model <--- EngineState
+                         measured values          physical truth
+                                                      |
+                                                      v
+                                           diagnostics and plots
+```
 
-Throttle Command
-       |
-       v
-Setpoint Scheduling
-       |
-       v
-Engine Controller
-       |
-       v
-Limiters
-       |
-       v
-Fuel Command
-       |
-       v
-Engine Model
-       |
-       +---- Rotor Speed
-       |
-       +---- Exhaust Gas Temperature
-       |
-       +---- Estimated Thrust
-       |
-       +---- Estimated Fuel Flow
-       |
-       v
-Logging and Visualization
+`EngineState` is owned and updated by the engine plant. The sensor model reads
+that narrowly scoped state without modifying it and publishes `SensorData`.
+State transitions based on engine conditions, speed feedback, and EGT
+protection all use `SensorData`; only plant integration and simulation-only
+diagnostics use truth directly.
 
 ## Main Modules
 
-### Engine Model
+- `simulation/models/` contains rotor-speed and EGT plant dynamics plus
+  algebraic thrust and fuel-flow estimates.
+- `simulation/sensors/` converts engine truth into measured rotor speed and
+  EGT.
+- `simulation/operation/` owns the explicit engine operating-state machine.
+- `simulation/controllers/` schedules demanded speed and calculates requested
+  fuel.
+- `simulation/protection/` limits the requested command using measured EGT.
+- `simulation/application/` composes the components and provides terminal and
+  graphical interactive applications.
+- `simulation/examples/` contains open-loop and closed-loop demonstrations.
 
-The engine model represents the dynamic response of the gas turbine.
+The component boundaries use the protocols and data types in
+`simulation/core/`. Open-loop plant-only examples may inspect truth directly;
+closed-loop examples route feedback through the sensor model.
 
-Initial states:
-- rotor speed
-- exhaust gas temperature
+## Sensor Model
 
-Input:
-- normalized fuel command
+Rotor speed and EGT have independent typed configuration. Each channel applies
+the following explicit sequence:
 
-Outputs:
-- rotor speed
-- exhaust gas temperature
-- estimated thrust
-- estimated fuel flow
+1. Read the true physical value.
+2. Add constant bias.
+3. Add optional Gaussian noise.
+4. Quantize around zero when the quantization step is nonzero.
+5. Clamp to the measurable range.
+6. Publish at the channel sample period and hold between samples.
 
-The first implementation uses a two-state grey-box model. Detailed compressor maps, combustion chemistry, and component-level thermodynamics are excluded from the initial version.
+The first update publishes both channels immediately. Later updates use
+independent accumulated sample timing, so one channel may update while the
+other holds its previous value.
 
-### Engine Controller
+Each sensor-model instance owns its random generator; global random state is
+not used. A fixed seed gives repeatable measurements and simulation runs.
+Setting the seed to `None` enables non-reproducible demonstration noise.
+Reset clears retained measurements and timers and restores the initial random
+state without resetting the engine plant.
 
-The engine controller calculates the required fuel command based on the requested operating point and measured engine values.
+The default values are initial modelling assumptions, not validated hardware
+specifications. Rotor speed uses 50 rpm noise, 10 rpm quantization, a
+0 to 150,000 rpm range, and a 0.01 s sample period. EGT uses 1 °C noise,
+0.5 °C quantization, a -50 to 1,000 °C range, and a 0.02 s sample period.
 
-The initial controller will contain:
+## Fixed-Step Execution
 
-- rotor-speed controller
-- minimum and maximum fuel limits
-- acceleration limiter
-- exhaust-gas-temperature limiter
+For each coordinated simulation step:
 
-The controller shall not directly depend on the internal implementation of the engine model.
+1. Sample or retain measured engine signals.
+2. Evaluate operating-state transitions from operator requests and measured
+   conditions.
+3. Calculate open-loop start fuel or closed-loop requested fuel.
+4. Apply EGT protection using measured temperature.
+5. Advance the physical engine model with the allowed actuator command.
+6. Record truth, measurements, commands, errors, and derived outputs.
 
-### Setpoint Scheduling
+## Current Limitations
 
-The setpoint scheduler converts a normalized throttle command into a rotor-speed setpoint.
-
-Input:
-- normalized throttle command
-
-Output:
-- rotor-speed setpoint
-
-The initial implementation uses a simple mapping between idle speed and maximum speed.
-
-### Components
-
-Component models represent sensors, actuators, and interfaces that may later be replaced by real hardware.
-
-Planned components include:
-
-- rotor-speed sensor
-- exhaust-temperature sensor
-- fuel-pump actuator
-- throttle input
-
-The first simulation may use ideal components. Sensor noise, delay, quantization, and actuator dynamics will be introduced later.
-
-### Logging and Visualization
-
-Logging and visualization modules record and display simulation signals.
-
-Typical recorded signals include:
-- simulation time
-- throttle command
-- rotor-speed setpoint
-- rotor speed
-- exhaust gas temperature
-- fuel command
-- estimated thrust
-- estimated fuel flow
-- active limiter states
-
-Logging and plotting functions shall remain separate from the engine and controller logic.
-
-## Software Structure
-
-simulation/
-├── models/
-│   └── engine_model.py
-├── controllers/
-│   └── engine_controller.py
-├── components/
-│   ├── sensors.py
-│   └── fuel_pump.py
-├── utilities/
-│   ├── logging.py
-│   └── plotting.py
-└── examples/
-    └── open_loop_engine_simulation.py
-
-
-The exact file structure may evolve as the project grows.
-
-## Interfaces
-
-### Engine Model Interface
-
-Inputs:
-- fuel_command
-- time_step
-
-Outputs:
-- rotor_speed_rpm
-- exhaust_temperature_c
-- estimated_thrust_n
-- estimated_fuel_flow_ml_min
-
-### Controller Interface
-
-Inputs:
-- rotor_speed_setpoint_rpm
-- measured_rotor_speed_rpm
-- measured_exhaust_temperature_c
-- time_step
-
-Output:
-- fuel_command
-
-The normalized fuel command shall be limited to the range:
-
-0.0 <= fuel_command <= 1.0
-
-
-## Simulation Execution
-
-The initial simulation uses a fixed time step.
-
-For each simulation step:
-
-1. Read the throttle command.
-2. Calculate the rotor-speed setpoint.
-3. Read simulated sensor values.
-4. Calculate the controller output.
-5. Apply protection and rate limits.
-6. Update the engine model.
-7. Calculate derived outputs.
-8. Record simulation data.
-
-## Initial Scope
-
-The first simulation version includes:
-- running operation between idle and maximum speed
-- rotor-speed dynamics
-- exhaust-temperature dynamics
-- estimated thrust
-- estimated fuel flow
-- open-loop and closed-loop simulation
-- deterministic execution with a fixed time step
-
-## Excluded from the Initial Version
-
-The following functions are initially excluded:
-- engine start sequence
-- ignition system
-- starter motor
-- fuel-valve sequencing
-- shutdown and cooling sequence
-- component failures
-- altitude effects
-- flight-speed effects
-- detailed sensor dynamics
-- real-time hardware communication
-
-These functions may be introduced in later milestones.
-
-## Design Principles
-
-The simulation architecture shall follow these principles:
-
-- separation of physical model and controller
-- clear and stable interfaces
-- independently testable modules
-- minimal dependency between modules
-- reproducible simulation results
-- compatibility with future embedded and HIL implementations
-- gradual replacement of simulated components with real hardware interfaces
+The simulation does not yet model sensor faults, stuck signals, dropouts,
+runtime bias changes, signal-validity states, redundant sensors, or sensor
+filters. Fault injection and signal validation are deferred to Sprint 9.
+Detailed compressor maps, combustion chemistry, environmental corrections,
+actuator dynamics, and real-time hardware communication are also outside the
+current model scope.
