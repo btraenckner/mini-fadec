@@ -60,6 +60,8 @@ def test_dashboard_history_is_bounded() -> None:
 
     assert len(history.times_s) == 2
     assert len(history.operating_states) == 2
+    assert len(history.measured_rotor_speeds_rpm) == 2
+    assert len(history.measured_exhaust_temperatures_c) == 2
     assert len(history.estimated_thrusts_n) == 2
 
 

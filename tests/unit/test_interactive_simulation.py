@@ -1,8 +1,13 @@
 """Unit tests for interactive simulation command parsing."""
 
+from io import StringIO
+
 import pytest
 
-from simulation.application.interactive_simulation import parse_command
+from simulation.application.interactive_simulation import (
+    InteractiveEngineSimulation,
+    parse_command,
+)
 
 
 @pytest.mark.parametrize(
@@ -32,3 +37,16 @@ def test_parse_command_accepts_numeric_throttle() -> None:
 def test_parse_command_rejects_malformed_commands(command_text: str) -> None:
     with pytest.raises(ValueError):
         parse_command(command_text)
+
+
+def test_status_displays_true_and_measured_sensor_telemetry() -> None:
+    output_stream = StringIO()
+    simulation = InteractiveEngineSimulation(output_stream=output_stream)
+
+    simulation._print_status(simulation.coordinator.snapshot)
+
+    status_text = output_stream.getvalue()
+    assert "true/measured speed=" in status_text
+    assert "true/measured EGT=" in status_text
+    assert "error=" in status_text
+    assert "sample periods=0.010/0.020 s" in status_text

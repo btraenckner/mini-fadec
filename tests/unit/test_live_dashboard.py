@@ -19,6 +19,10 @@ def test_dashboard_advances_and_refreshes_live_signals() -> None:
     assert snapshot.operating_state is EngineOperatingState.CRANKING
     assert len(dashboard.dashboard_simulation.history.times_s) == 2
     assert len(dashboard._rotor_speed_line.get_xdata()) == 2
+    assert len(dashboard._measured_rotor_speed_line.get_xdata()) == 2
+    assert len(dashboard._measured_egt_line.get_xdata()) == 2
+    assert "RPM T/M/E" in dashboard._telemetry_text.get_text()
+    assert "Sample R/E" in dashboard._telemetry_text.get_text()
     dashboard.close(save_result=False)
 
 

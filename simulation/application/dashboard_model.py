@@ -78,7 +78,9 @@ class DashboardHistory:
     throttle_commands: list[float] = field(default_factory=list)
     speed_setpoints_rpm: list[float] = field(default_factory=list)
     rotor_speeds_rpm: list[float] = field(default_factory=list)
+    measured_rotor_speeds_rpm: list[float] = field(default_factory=list)
     exhaust_temperatures_c: list[float] = field(default_factory=list)
+    measured_exhaust_temperatures_c: list[float] = field(default_factory=list)
     requested_fuel_commands: list[float] = field(default_factory=list)
     allowed_fuel_commands: list[float] = field(default_factory=list)
     estimated_thrusts_n: list[float] = field(default_factory=list)
@@ -92,7 +94,13 @@ class DashboardHistory:
         self.throttle_commands.append(snapshot.throttle_command)
         self.speed_setpoints_rpm.append(snapshot.speed_setpoint_rpm)
         self.rotor_speeds_rpm.append(snapshot.rotor_speed_rpm)
+        self.measured_rotor_speeds_rpm.append(
+            snapshot.measured_rotor_speed_rpm
+        )
         self.exhaust_temperatures_c.append(snapshot.exhaust_temperature_c)
+        self.measured_exhaust_temperatures_c.append(
+            snapshot.measured_exhaust_temperature_c
+        )
         self.requested_fuel_commands.append(snapshot.requested_fuel_command)
         self.allowed_fuel_commands.append(snapshot.allowed_fuel_command)
         self.estimated_thrusts_n.append(snapshot.estimated_thrust_n)
@@ -112,7 +120,9 @@ class DashboardHistory:
             self.throttle_commands,
             self.speed_setpoints_rpm,
             self.rotor_speeds_rpm,
+            self.measured_rotor_speeds_rpm,
             self.exhaust_temperatures_c,
+            self.measured_exhaust_temperatures_c,
             self.requested_fuel_commands,
             self.allowed_fuel_commands,
             self.estimated_thrusts_n,

@@ -211,12 +211,22 @@ class LiveEngineDashboard:
             linestyle="--",
             label="Setpoint",
         )
-        (self._rotor_speed_line,) = speed_axis.plot([], [], label="Actual")
+        (self._rotor_speed_line,) = speed_axis.plot([], [], label="True")
+        (self._measured_rotor_speed_line,) = speed_axis.plot(
+            [],
+            [],
+            label="Measured",
+        )
         speed_axis.set_ylabel("Rotor speed\n[rpm]")
         speed_axis.set_ylim(0.0, 135_000.0)
         speed_axis.legend(loc="upper left")
 
-        (self._egt_line,) = egt_axis.plot([], [], label="EGT")
+        (self._egt_line,) = egt_axis.plot([], [], label="True EGT")
+        (self._measured_egt_line,) = egt_axis.plot(
+            [],
+            [],
+            label="Measured EGT",
+        )
         egt_axis.axhline(
             self.dashboard_simulation.coordinator.egt_limiter.parameters.intervention_exhaust_temperature_c,
             color="tab:orange",
@@ -283,9 +293,19 @@ class LiveEngineDashboard:
             history.rotor_speeds_rpm,
         )
         self._set_line_data(
+            self._measured_rotor_speed_line,
+            history.times_s,
+            history.measured_rotor_speeds_rpm,
+        )
+        self._set_line_data(
             self._egt_line,
             history.times_s,
             history.exhaust_temperatures_c,
+        )
+        self._set_line_data(
+            self._measured_egt_line,
+            history.times_s,
+            history.measured_exhaust_temperatures_c,
         )
         self._set_line_data(
             self._requested_fuel_line,
@@ -326,8 +346,14 @@ class LiveEngineDashboard:
         self._telemetry_text.set_text(
             f"Time       {snapshot.simulation_time_s:7.2f} s\n"
             f"Throttle   {self.dashboard_simulation.controls.throttle_command:7.3f}\n"
-            f"Speed      {snapshot.rotor_speed_rpm:7.0f} rpm\n"
-            f"EGT        {snapshot.exhaust_temperature_c:7.1f} °C\n"
+            f"RPM T/M/E  {snapshot.rotor_speed_rpm:7.0f}/"
+            f"{snapshot.measured_rotor_speed_rpm:.0f}/"
+            f"{snapshot.rotor_speed_measurement_error_rpm:+.0f}\n"
+            f"EGT T/M/E  {snapshot.exhaust_temperature_c:7.1f}/"
+            f"{snapshot.measured_exhaust_temperature_c:.1f}/"
+            f"{snapshot.exhaust_temperature_measurement_error_c:+.1f} °C\n"
+            f"Sample R/E {snapshot.rotor_speed_sensor_sample_period_s:7.3f}/"
+            f"{snapshot.exhaust_temperature_sensor_sample_period_s:.3f} s\n"
             f"Fuel req.  {snapshot.requested_fuel_command:7.3f}\n"
             f"Fuel allow {snapshot.allowed_fuel_command:7.3f}\n"
             f"Starter    {self._on_off(snapshot.starter_commanded):>7s}\n"
