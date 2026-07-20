@@ -342,6 +342,233 @@ The inspector uses only the standard library. Plotting uses the project's
 existing matplotlib dependency and reads persisted CSV after the run; it is
 never called from live integration.
 
+## Deterministic Scenario Verification
+
+Sprint 12 adds a non-interactive execution path for repeatable project-level
+simulation verification. It is deliberately separate from engine physics,
+control, protection, signal validation, telemetry capture, and terminal or
+dashboard presentation:
+
+```text
+Terminal / future dashboard / CLI
+                |
+                v
+        Scenario execution API
+                |
+                v
+          ScenarioRunner
+          +-- actions
+          +-- triggers
+          +-- conditions
+          +-- progress
+                |
+                v
+        SimulationService
+                |
+                v
+      SimulationSnapshot + Events
+                |
+                v
+     Requirement evaluators
+                |
+                v
+         ScenarioResult
+                |
+                v
+ JSON report + Markdown report
+```
+
+`simulation.scenarios` owns immutable scenario definitions, typed actions,
+simulation-time triggers, read-only conditions, deterministic execution, the
+explicit regression library, serialization, and the CLI. Actions call only
+the existing `SimulationService` methods. They do not access or mutate the
+engine model, controller, state machine, validator, fault injector, or
+Protection Manager. Conditions inspect only the latest or captured immutable
+snapshots, structured events, and immutable action results.
+
+`simulation.verification` owns requirement identity and criticality, focused
+evaluators, explicit evidence, result aggregation, standards-compliant JSON,
+and concise Markdown reports. Evaluators consume the same captured snapshots,
+events, and action outcomes used by other application clients. Operational
+requirements use validated values and final actuator commands. Engine truth
+remains available only for requirements explicitly identified as
+simulation-only.
+
+### Scenario definitions, actions, and sequencing
+
+A `Scenario` has a stable ID, name, description, maximum duration, optional
+fixed-step override, recording configuration, immutable action and requirement
+tuples, tags, expected terminal condition, narrow configuration overrides, and
+an optional deterministic seed. Construction rejects empty IDs, nonpositive
+timing, duplicate action or requirement IDs, invalid triggers, unknown action
+dependencies, and unsupported overrides. Supported overrides are currently
+the artifact base directory, telemetry sampling period, and sensor random
+seed; shared global configuration is never mutated.
+
+Actions include engine start, normalized throttle changes, shutdown, reset,
+manual fault request, typed sensor-fault injection and clearing, markers, and
+recording start and stop. Each action has an ID, description, trigger,
+required-success policy, and optional timeout. Runtime `ActionResult` values
+distinguish `PENDING`, `EXECUTED`, `SKIPPED`, `FAILED`, and `TIMED_OUT`.
+The runner evaluates definitions in stable tuple order and executes each action
+at most once.
+
+`AtTimeTrigger` becomes due when simulation time reaches or crosses its
+inclusive boundary. A numeric tolerance prevents accumulated floating-point
+time from delaying an exact boundary. `WhenConditionTrigger` wraps one typed
+condition and an optional simulation-time timeout. Reusable conditions cover
+current or previously reached engine state, validated rotor-speed and EGT
+thresholds, throttle demand, limiter state, sensor health, critical protection,
+typed events, action completion, and elapsed simulation time after an action.
+`AllConditions` supports small explicit dependencies without creating a
+general workflow or expression language.
+
+An example definition follows the same shape as the library scenarios:
+
+```python
+Scenario(
+    scenario_id="SCN-NORMAL-001",
+    name="normal_start_run_shutdown",
+    description="Normal startup, operation, and shutdown.",
+    max_duration_s=25.0,
+    actions=(
+        StartEngineAction(
+            action_id="start",
+            description="Request startup",
+            trigger=AtTimeTrigger(0.1),
+        ),
+        SetThrottleAction(
+            action_id="run",
+            description="Set running demand after IDLE",
+            trigger=WhenConditionTrigger(
+                EngineStateEqualsCondition(EngineOperatingState.IDLE),
+                timeout_s=12.0,
+            ),
+            throttle_demand=0.55,
+        ),
+    ),
+    requirements=(...),
+    tags=("normal", "lifecycle"),
+    expected_terminal_condition=EngineStateEqualsCondition(
+        EngineOperatingState.OFF
+    ),
+)
+```
+
+### Runner, progress, and determinism
+
+`ScenarioRunner` creates a fresh `SimulationService` composition for every
+scenario, optionally starts the Sprint 11 recorder, executes due actions,
+steps the service, captures the canonical snapshots and typed events, checks
+termination, evaluates requirements, finalizes recording, and writes reports.
+Its default loop has no wall-clock sleeping. Scenario triggers, timeouts,
+settling windows, response times, maximum duration, and event times use only
+simulation time. Wall-clock time is limited to run naming, generated-at
+metadata, execution-performance measurement, and the real-time-factor report.
+An explicitly enabled paced mode may sleep once per simulation step.
+
+The synchronous `run_scenario(scenario)` function is the simplest entry point.
+For a future dashboard, `prepare_scenario`, `step_scenario`,
+`get_scenario_progress`, and `cancel_scenario` expose the same core without
+terminal output or UI dependencies. `ScenarioProgress` includes the scenario
+ID, simulation time and duration, execution state, engine state, action counts,
+active recording directory, latest snapshot, recent events, action results,
+and partial requirement status. All collections returned to clients are
+immutable tuples.
+
+With the same scenario, seed, time step, initial composition, and
+configuration, action order and time, snapshot and event sequences,
+requirement outcomes, and overall result are deterministic. Normalization
+removes only documented nondeterministic fields such as wall-clock execution
+duration, real-time factor, and filesystem paths.
+
+### Requirement and evidence model
+
+Requirements have stable IDs, descriptions, categories, criticality, an
+explicit evaluator, and optional applicability text. Categories cover state
+sequence and timing, signal limits, steady state, transients, protection,
+sensor-fault response, actuator safety, and logical invariants. Criticality is
+`INFO`, `MINOR`, `MAJOR`, or `CRITICAL`; these are project classifications and
+do not claim aerospace certification compliance.
+
+The initial evaluator set covers state reached, state reached within a time,
+state transition sequence, signal maximum and minimum, signal band, settling
+time with continuous dwell, overshoot, acceleration limit, actuator
+invariants, event observed or absent, sensor fault response time, fuel-cutoff
+response, limiter intervention, sensor-health transition, and explicit
+no-truth-fallback behavior. Missing evidence becomes `NOT_EVALUATED` or
+`NOT_APPLICABLE`; evaluator exceptions become `ERROR` and can never pass.
+
+`RequirementEvidence` uses explicit optional fields for measured and expected
+values, bounds, tolerance, margin, evaluation and violation times, state,
+action or event identity, maximum violation, and diagnostics. It contains no
+live simulation object. Numeric boundaries are inclusive within their stated
+tolerance, and unavailable values remain `None` rather than becoming zero.
+
+Overall PASS requires completed execution, no required action failure or
+timeout, no impacting requirement failure, and successful report generation.
+Any `CRITICAL`, `MAJOR`, or `MINOR` failure fails the scenario. An `INFO`
+failure is a warning by default and may leave the scenario PASS. Any evaluator
+`ERROR`, execution error, timeout, or report error fails the scenario. An
+explicit cancellation returns `CANCELLED` and still finalizes artifacts.
+
+### Scenario library, CLI, and artifacts
+
+The explicit registry currently contains normal lifecycle, large throttle
+step, rapid throttle reduction, RPM dropout, EGT dropout, soft overspeed, and
+hard overspeed scenarios. Fault and overspeed scenarios create their inputs
+through the existing typed sensor-fault path so validation and protection are
+not bypassed.
+
+Use the non-interactive CLI as follows:
+
+```text
+python -m simulation.scenarios.cli list
+python -m simulation.scenarios.cli show normal_start_run_shutdown
+python -m simulation.scenarios.cli run normal_start_run_shutdown
+python -m simulation.scenarios.cli run-all
+```
+
+`run` returns zero only for PASS. `run-all` returns nonzero if any registered
+scenario fails. Core runner methods never print; only the CLI adapter formats
+terminal summaries.
+
+Every recorded scenario extends the unique Sprint 11 run directory:
+
+```text
+artifacts/runs/<unique-scenario-run>/
+  telemetry.csv
+  events.csv
+  metadata.json
+  scenario.json
+  requirements.json
+  report.md
+```
+
+If automatic full-run recording is disabled and no recording action starts a
+session, finalization still creates a recorder-backed diagnostic directory
+with the final snapshot so controlled failures and cancellations retain the
+same report artifact structure without duplicating CSV-writing logic.
+
+`scenario.json` uses explicit action, trigger, condition, and evaluator type
+names plus parameters. `requirements.json` contains schema version, aggregate
+status and counts, action results, requirement evidence, and artifact paths.
+JSON serialization rejects nonstandard NaN and Infinity values by converting
+unavailable numeric evidence to `null`. `report.md` summarizes execution,
+actions, requirements, failures, evidence, source revision, and artifact
+links without embedding telemetry tables. Existing report files are never
+overwritten. Scenario identity, status, and counts are added to finalized run
+metadata.
+
+To extend the framework, add a small immutable action whose `execute` method
+uses the narrow application-service protocol; add a condition that reads only
+`ConditionContext`; add an evaluator that returns `EvaluationOutcome` with
+typed evidence; or add a scenario factory to the explicit ordered library.
+New definitions must also be supported by explicit serialization and focused
+tests. A future dashboard can call the runner and progress interfaces directly
+and render snapshots, events, action state, and final results without reading
+low-level component state.
+
 ## Current Limitations
 
 The simulation does not model redundant sensors, voting, analytical signal
@@ -355,8 +582,16 @@ they do not model compressor surge margin, flameout, or combustor stability.
 Overspeed protection assumes one validated speed channel and does not model
 redundant trip hardware.
 
-Run recording currently uses synchronous local CSV I/O, one process, and one
-schema family. It does not provide database indexing, networking, background
-workers, automatic requirements evaluation, cross-version migration, or live
-comparison of loaded historical runs. Wall-clock and Git metadata are
-identification aids rather than deterministic comparison fields.
+Run recording and scenario verification currently use synchronous local file
+I/O and retain one scenario's evidence in memory. They do not provide database
+indexing, networking, background workers, cross-version migration, online
+streaming verification, campaigns, optimization, a YAML language, or live
+comparison of loaded historical runs. Partial progress reports requirement
+definitions as not yet evaluated; authoritative evaluation is post-run.
+Wall-clock and Git metadata are identification aids rather than deterministic
+comparison fields.
+
+This framework is a simulation and development verification environment. It
+is not a certified aerospace verification tool and does not implement a
+DO-178C process, formal external traceability, hardware-in-the-loop transport,
+or independent safety assurance.
