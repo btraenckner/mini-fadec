@@ -67,6 +67,45 @@ SensorFaultDefinition: TypeAlias = (
     | ExcessiveNoiseSensorFault
     | DriftSensorFault
 )
+FaultParameters: TypeAlias = tuple[
+    tuple[str, float | str | bool | None], ...
+]
+
+
+def sensor_fault_type(fault: SensorFaultDefinition | None) -> str:
+    """Return a stable machine-readable fault type name."""
+
+    if fault is None:
+        return "none"
+    if isinstance(fault, BiasSensorFault):
+        return "bias"
+    if isinstance(fault, StuckSensorFault):
+        return "stuck"
+    if isinstance(fault, DropoutSensorFault):
+        return "dropout"
+    if isinstance(fault, ForcedValueSensorFault):
+        return "forced_value"
+    if isinstance(fault, ExcessiveNoiseSensorFault):
+        return "excessive_noise"
+    return "drift"
+
+
+def sensor_fault_parameters(
+    fault: SensorFaultDefinition | None,
+) -> FaultParameters:
+    """Return stable typed fault parameters without exposing runtime objects."""
+
+    if fault is None or isinstance(fault, DropoutSensorFault):
+        return ()
+    if isinstance(fault, BiasSensorFault):
+        return (("offset", fault.offset),)
+    if isinstance(fault, StuckSensorFault):
+        return (("value", fault.value),)
+    if isinstance(fault, ForcedValueSensorFault):
+        return (("value", fault.value),)
+    if isinstance(fault, ExcessiveNoiseSensorFault):
+        return (("standard_deviation", fault.standard_deviation),)
+    return (("rate_per_second", fault.rate_per_second),)
 
 
 @dataclass
