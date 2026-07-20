@@ -7,8 +7,12 @@ from simulation.controllers.speed_controller import (
     LinearThrottleToSpeedScheduler,
     PIEngineSpeedController,
 )
-from simulation.core.types import AmbientConditions, ControlRequest, SensorData
+from simulation.core.types import AmbientConditions, ControlRequest
 from simulation.models.engine_model import FirstOrderEngineModel
+from simulation.sensors.sensor_model import (
+    ConfigurableSensorModel,
+    SensorModelConfiguration,
+)
 
 
 def throttle_command_schedule(time_s: float) -> float:
@@ -29,6 +33,10 @@ def main() -> None:
     engine_model = FirstOrderEngineModel.running_at_idle()
     scheduler = LinearThrottleToSpeedScheduler()
     controller = PIEngineSpeedController(scheduler=scheduler)
+    # Use random_seed=None to demonstrate non-reproducible measurement noise.
+    sensor_model = ConfigurableSensorModel(
+        configuration=SensorModelConfiguration(random_seed=0)
+    )
     ambient_conditions = AmbientConditions()
 
     times_s = np.arange(
@@ -40,16 +48,18 @@ def main() -> None:
     throttle_commands: list[float] = []
     speed_setpoints_rpm: list[float] = []
     rotor_speeds_rpm: list[float] = []
+    measured_rotor_speeds_rpm: list[float] = []
     fuel_commands: list[float] = []
     exhaust_temperatures_c: list[float] = []
+    measured_exhaust_temperatures_c: list[float] = []
     estimated_thrusts_n: list[float] = []
 
     for time_s in times_s:
         throttle_command = throttle_command_schedule(time_s)
         control_request = ControlRequest(throttle_command=throttle_command)
-        sensor_data = SensorData(
-            rotor_speed_rpm=engine_model.state.rotor_speed_rpm,
-            exhaust_temperature_c=engine_model.state.exhaust_temperature_c,
+        sensor_data = sensor_model.measure(
+            engine_state=engine_model.state,
+            time_step_s=time_step_s,
         )
 
         actuator_command = controller.update(
@@ -68,9 +78,13 @@ def main() -> None:
             scheduler.get_speed_setpoint_rpm(throttle_command)
         )
         rotor_speeds_rpm.append(engine_model.state.rotor_speed_rpm)
+        measured_rotor_speeds_rpm.append(sensor_data.rotor_speed_rpm)
         fuel_commands.append(actuator_command.fuel_command)
         exhaust_temperatures_c.append(
             engine_model.state.exhaust_temperature_c
+        )
+        measured_exhaust_temperatures_c.append(
+            sensor_data.exhaust_temperature_c
         )
         estimated_thrusts_n.append(outputs.estimated_thrust_n)
 
@@ -81,7 +95,8 @@ def main() -> None:
     axes[0].grid()
 
     axes[1].plot(times_s, speed_setpoints_rpm, label="Setpoint")
-    axes[1].plot(times_s, rotor_speeds_rpm, label="Actual")
+    axes[1].plot(times_s, rotor_speeds_rpm, label="True")
+    axes[1].plot(times_s, measured_rotor_speeds_rpm, label="Measured")
     axes[1].set_ylabel("Rotor speed [rpm]")
     axes[1].legend()
     axes[1].grid()
@@ -90,8 +105,14 @@ def main() -> None:
     axes[2].set_ylabel("Fuel command [-]")
     axes[2].grid()
 
-    axes[3].plot(times_s, exhaust_temperatures_c)
+    axes[3].plot(times_s, exhaust_temperatures_c, label="True")
+    axes[3].plot(
+        times_s,
+        measured_exhaust_temperatures_c,
+        label="Measured",
+    )
     axes[3].set_ylabel("EGT [°C]")
+    axes[3].legend()
     axes[3].grid()
 
     axes[4].plot(times_s, estimated_thrusts_n)

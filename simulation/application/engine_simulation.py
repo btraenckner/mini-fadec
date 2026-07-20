@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from simulation.controllers.speed_controller import PIEngineSpeedController
+from simulation.core.interfaces import SensorModelInterface
 from simulation.core.types import (
     ActuatorCommand,
     AmbientConditions,
@@ -19,6 +20,10 @@ from simulation.operation.state_machine import (
 from simulation.protection.exhaust_temperature_limiter import (
     ExhaustTemperatureLimiter,
 )
+from simulation.sensors.sensor_model import (
+    ConfigurableSensorModel,
+    SensorModelConfiguration,
+)
 
 
 @dataclass(frozen=True)
@@ -31,7 +36,13 @@ class EngineSimulationSnapshot:
     throttle_command: float
     speed_setpoint_rpm: float
     rotor_speed_rpm: float
+    measured_rotor_speed_rpm: float
+    rotor_speed_measurement_error_rpm: float
     exhaust_temperature_c: float
+    measured_exhaust_temperature_c: float
+    exhaust_temperature_measurement_error_c: float
+    rotor_speed_sensor_sample_period_s: float
+    exhaust_temperature_sensor_sample_period_s: float
     requested_fuel_command: float
     allowed_fuel_command: float
     estimated_thrust_n: float
@@ -53,12 +64,17 @@ class EngineSimulationCoordinator:
         state_machine: EngineStateMachine | None = None,
         speed_controller: PIEngineSpeedController | None = None,
         egt_limiter: ExhaustTemperatureLimiter | None = None,
+        sensor_model: SensorModelInterface | None = None,
         ambient_conditions: AmbientConditions | None = None,
     ) -> None:
         self.engine_model = engine_model or FirstOrderEngineModel()
         self.state_machine = state_machine or EngineStateMachine()
         self.speed_controller = speed_controller or PIEngineSpeedController()
         self.egt_limiter = egt_limiter or ExhaustTemperatureLimiter()
+        # Set random_seed=None for non-reproducible demonstration noise.
+        self.sensor_model = sensor_model or ConfigurableSensorModel(
+            configuration=SensorModelConfiguration(random_seed=0)
+        )
         self.ambient_conditions = ambient_conditions or AmbientConditions()
 
         self._simulation_time_s = 0.0
@@ -78,7 +94,10 @@ class EngineSimulationCoordinator:
     ) -> EngineSimulationSnapshot:
         """Advance all composed simulation components by one time step."""
 
-        sensor_data = self._sensor_data()
+        sensor_data = self.sensor_model.measure(
+            engine_state=self.engine_model.state,
+            time_step_s=time_step_s,
+        )
         previous_operating_state = self.state_machine.state
         operating_command = self.state_machine.update(
             request=request,
@@ -122,8 +141,26 @@ class EngineSimulationCoordinator:
             throttle_command=operating_command.effective_throttle_command,
             speed_setpoint_rpm=self._speed_setpoint_rpm(operating_command),
             rotor_speed_rpm=self.engine_model.state.rotor_speed_rpm,
+            measured_rotor_speed_rpm=sensor_data.rotor_speed_rpm,
+            rotor_speed_measurement_error_rpm=(
+                sensor_data.rotor_speed_rpm
+                - self.engine_model.state.rotor_speed_rpm
+            ),
             exhaust_temperature_c=(
                 self.engine_model.state.exhaust_temperature_c
+            ),
+            measured_exhaust_temperature_c=(
+                sensor_data.exhaust_temperature_c
+            ),
+            exhaust_temperature_measurement_error_c=(
+                sensor_data.exhaust_temperature_c
+                - self.engine_model.state.exhaust_temperature_c
+            ),
+            rotor_speed_sensor_sample_period_s=(
+                self.sensor_model.rotor_speed_sample_period_s
+            ),
+            exhaust_temperature_sensor_sample_period_s=(
+                self.sensor_model.exhaust_temperature_sample_period_s
             ),
             requested_fuel_command=requested_command.fuel_command,
             allowed_fuel_command=allowed_command.fuel_command,
@@ -202,14 +239,6 @@ class EngineSimulationCoordinator:
             operating_command.effective_throttle_command
         )
 
-    def _sensor_data(self) -> SensorData:
-        """Create ideal sensor data from the current engine state."""
-
-        return SensorData(
-            rotor_speed_rpm=self.engine_model.state.rotor_speed_rpm,
-            exhaust_temperature_c=self.engine_model.state.exhaust_temperature_c,
-        )
-
     def _initial_snapshot(self) -> EngineSimulationSnapshot:
         """Create the safe initial OFF-state snapshot."""
 
@@ -220,7 +249,19 @@ class EngineSimulationCoordinator:
             throttle_command=0.0,
             speed_setpoint_rpm=0.0,
             rotor_speed_rpm=self.engine_model.state.rotor_speed_rpm,
+            measured_rotor_speed_rpm=self.engine_model.state.rotor_speed_rpm,
+            rotor_speed_measurement_error_rpm=0.0,
             exhaust_temperature_c=self.engine_model.state.exhaust_temperature_c,
+            measured_exhaust_temperature_c=(
+                self.engine_model.state.exhaust_temperature_c
+            ),
+            exhaust_temperature_measurement_error_c=0.0,
+            rotor_speed_sensor_sample_period_s=(
+                self.sensor_model.rotor_speed_sample_period_s
+            ),
+            exhaust_temperature_sensor_sample_period_s=(
+                self.sensor_model.exhaust_temperature_sample_period_s
+            ),
             requested_fuel_command=0.0,
             allowed_fuel_command=0.0,
             estimated_thrust_n=0.0,

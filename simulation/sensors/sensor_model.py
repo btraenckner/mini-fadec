@@ -83,6 +83,18 @@ class ConfigurableSensorModel:
         self._retained_rotor_speed_rpm: float | None = None
         self._retained_exhaust_temperature_c: float | None = None
 
+    @property
+    def rotor_speed_sample_period_s(self) -> float:
+        """Return the configured rotor-speed measurement sample period."""
+
+        return self.configuration.rotor_speed.sample_period_s
+
+    @property
+    def exhaust_temperature_sample_period_s(self) -> float:
+        """Return the configured EGT measurement sample period."""
+
+        return self.configuration.exhaust_temperature.sample_period_s
+
     def measure(
         self,
         engine_state: EngineState,

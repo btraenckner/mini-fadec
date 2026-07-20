@@ -3,10 +3,28 @@
 from simulation.application.engine_simulation import EngineSimulationCoordinator
 from simulation.operation.engine_state import EngineOperatingState
 from simulation.operation.state_machine import EngineOperationRequest
+from simulation.sensors.sensor_model import (
+    ConfigurableSensorModel,
+    ExhaustTemperatureSensorConfiguration,
+    RotorSpeedSensorConfiguration,
+    SensorModelConfiguration,
+)
 
 
 def test_complete_engine_lifecycle() -> None:
-    coordinator = EngineSimulationCoordinator()
+    sensor_model = ConfigurableSensorModel(
+        configuration=SensorModelConfiguration(
+            rotor_speed=RotorSpeedSensorConfiguration(
+                noise_standard_deviation_rpm=0.0,
+                quantization_step_rpm=0.0,
+            ),
+            exhaust_temperature=ExhaustTemperatureSensorConfiguration(
+                noise_standard_deviation_c=0.0,
+                quantization_step_c=0.0,
+            ),
+        )
+    )
+    coordinator = EngineSimulationCoordinator(sensor_model=sensor_model)
     time_step_s = 0.01
     throttle_command = 0.0
     startup_requested = True

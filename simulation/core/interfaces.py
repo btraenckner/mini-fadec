@@ -33,6 +33,16 @@ class EngineModelInterface(Protocol):
 class SensorModelInterface(Protocol):
     """Interface implemented by simulated or real sensor adapters."""
 
+    @property
+    def rotor_speed_sample_period_s(self) -> float:
+        """Return the rotor-speed measurement sample period."""
+        ...
+
+    @property
+    def exhaust_temperature_sample_period_s(self) -> float:
+        """Return the EGT measurement sample period."""
+        ...
+
     def measure(
         self,
         engine_state: EngineState,
