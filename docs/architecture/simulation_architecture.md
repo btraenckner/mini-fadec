@@ -268,6 +268,11 @@ use the same in-process interface or add a narrow transport adapter around it;
 the UI must not calculate control values, decide transitions, parse terminal
 text, or read component internals.
 
+The current live dashboard uses this service directly. Its run-name field and
+record/stop buttons control the same recorder lifecycle as the terminal, show
+live sample and event counts, and finalize an active recording when the
+dashboard window closes.
+
 ### Telemetry and event schemas
 
 Snapshot serialization uses an explicit ordered `TELEMETRY_FIELDS` schema.
