@@ -44,6 +44,14 @@ class RawSensorData:
 
 
 @dataclass(frozen=True)
+class ValidatedSensorData:
+    """Validated values, explicitly unavailable after fallback expiration."""
+
+    rotor_speed_rpm: float | None
+    exhaust_temperature_c: float | None
+
+
+@dataclass(frozen=True)
 class ControlRequest:
     """Requested engine operating point."""
 
