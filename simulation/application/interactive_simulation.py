@@ -12,6 +12,7 @@ from simulation.application.engine_simulation import (
     EngineSimulationCoordinator,
     EngineSimulationSnapshot,
 )
+from simulation.application.simulation_service import SimulationService
 from simulation.operation.engine_state import EngineOperatingState
 from simulation.operation.state_machine import EngineOperationRequest
 from simulation.protection.types import ProtectionLimiter
@@ -33,6 +34,7 @@ class ParsedCommand:
     name: str
     argument: str | None = None
     value: float | None = None
+    text: str | None = None
 
 
 def parse_command(command_text: str) -> ParsedCommand:
@@ -53,6 +55,7 @@ def parse_command(command_text: str) -> ParsedCommand:
         "faults",
         "reset",
         "clear_faults",
+        "runs",
         "quit",
     }
     if command_name in commands_without_values:
@@ -76,6 +79,29 @@ def parse_command(command_text: str) -> ParsedCommand:
 
     if command_name == "inject":
         return _parse_inject_command(command_parts)
+
+    if command_name == "record":
+        if len(command_parts) < 2 or command_parts[1] not in {
+            "start",
+            "stop",
+            "status",
+        }:
+            raise ValueError("usage: record <start [run_name]|stop|status>")
+        action = command_parts[1]
+        if action == "start":
+            if len(command_parts) > 3:
+                raise ValueError("usage: record start [run_name]")
+            run_name = command_parts[2] if len(command_parts) == 3 else None
+            return ParsedCommand(name="record", argument=action, text=run_name)
+        if len(command_parts) != 2:
+            raise ValueError(f"record {action} does not accept a value")
+        return ParsedCommand(name="record", argument=action)
+
+    if command_name == "mark":
+        marker_text = command_text.strip().partition(" ")[2].strip()
+        if not marker_text:
+            raise ValueError("usage: mark <text>")
+        return ParsedCommand(name="mark", text=marker_text)
 
     raise ValueError(f"unknown command: {command_name}")
 
@@ -130,22 +156,29 @@ class InteractiveEngineSimulation:
     def __init__(
         self,
         coordinator: EngineSimulationCoordinator | None = None,
+        service: SimulationService | None = None,
         *,
         time_step_s: float = 0.01,
         telemetry_interval_s: float = 1.0,
         input_stream: TextIO = sys.stdin,
         output_stream: TextIO = sys.stdout,
     ) -> None:
-        self.coordinator = coordinator or EngineSimulationCoordinator()
+        if coordinator is not None and service is not None:
+            raise ValueError("provide either coordinator or service, not both")
+        self.service = service or SimulationService(
+            coordinator=coordinator,
+            time_step_s=time_step_s,
+        )
+        # Compatibility view for existing callers; commands use the service.
+        self.coordinator = self.service.coordinator
         self.time_step_s = time_step_s
         self.telemetry_interval_s = telemetry_interval_s
         self.input_stream = input_stream
         self.output_stream = output_stream
 
         self._command_queue: Queue[str | None] = Queue()
-        self._throttle_command = 0.0
         self._running = True
-        self._printed_event_count = 0
+        self._last_printed_event_sequence = 0
 
     def run(self) -> None:
         """Run continuously with wall-clock pacing and non-blocking input."""
@@ -157,17 +190,14 @@ class InteractiveEngineSimulation:
         next_step_time = time.monotonic()
         next_telemetry_time_s = self.telemetry_interval_s
 
+        completed = False
         try:
             while self._running:
-                operation_request = self._process_queued_commands()
+                self._process_queued_commands()
                 if not self._running:
                     break
 
-                snapshot = self.coordinator.step(
-                    request=operation_request,
-                    time_step_s=self.time_step_s,
-                )
-                self._print_transition(snapshot)
+                snapshot = self.service.step()
                 self._print_new_events()
 
                 if snapshot.simulation_time_s >= next_telemetry_time_s:
@@ -180,8 +210,11 @@ class InteractiveEngineSimulation:
                     time.sleep(delay_s)
                 else:
                     next_step_time = time.monotonic()
+            completed = True
         except KeyboardInterrupt:
             self._print("Simulation interrupted.")
+        finally:
+            self.service.close(completed=completed)
 
         self._print("Simulation stopped.")
 
@@ -194,13 +227,8 @@ class InteractiveEngineSimulation:
         finally:
             self._command_queue.put(None)
 
-    def _process_queued_commands(self) -> EngineOperationRequest:
-        """Process all available commands and return one-step requests."""
-
-        startup_requested = False
-        shutdown_requested = False
-        fault_requested = False
-        reset_requested = False
+    def _process_queued_commands(self) -> None:
+        """Process all available commands through the application service."""
 
         while True:
             try:
@@ -221,41 +249,41 @@ class InteractiveEngineSimulation:
             if command.name == "help":
                 self._print_help()
             elif command.name == "start":
-                startup_requested = True
+                self.service.request_start()
             elif command.name == "throttle":
                 assert command.value is not None
-                self._throttle_command = self._clamp(command.value, 0.0, 1.0)
-                self._print(f"Throttle accepted: {self._throttle_command:.3f}")
+                throttle = self.service.set_throttle(command.value)
+                self._print(f"Throttle accepted: {throttle:.3f}")
             elif command.name == "shutdown":
-                shutdown_requested = True
+                self.service.request_shutdown()
             elif command.name == "status":
-                self._print_status(self.coordinator.snapshot)
+                self._print_status(self.service.get_latest_snapshot())
             elif command.name == "protection":
-                self._print_protection(self.coordinator.snapshot)
+                self._print_protection(self.service.get_latest_snapshot())
             elif command.name == "fault":
-                fault_requested = True
+                self.service.request_fault()
             elif command.name == "faults":
                 self._print_faults()
             elif command.name == "reset":
-                reset_requested = True
+                self.service.request_reset()
             elif command.name == "inject":
                 self._inject_sensor_fault(command)
             elif command.name == "clear_fault":
                 self._clear_sensor_fault(command)
             elif command.name == "clear_faults":
-                self.coordinator.clear_sensor_faults()
+                self.service.clear_sensor_faults()
                 self._print("Cleared all injected sensor faults")
+            elif command.name == "record":
+                self._process_recording_command(command)
+            elif command.name == "mark":
+                assert command.text is not None
+                self.service.add_marker(command.text)
+                self._print(f"Marker recorded: {command.text}")
+            elif command.name == "runs":
+                self._print_recent_runs()
             elif command.name == "quit":
                 self._running = False
                 break
-
-        return EngineOperationRequest(
-            throttle_command=self._throttle_command,
-            startup_requested=startup_requested,
-            shutdown_requested=shutdown_requested,
-            fault_requested=fault_requested,
-            reset_requested=reset_requested,
-        )
 
     def _inject_sensor_fault(self, command: ParsedCommand) -> None:
         """Convert a parsed request into one typed sensor fault definition."""
@@ -287,10 +315,10 @@ class InteractiveEngineSimulation:
             assert command.value is not None
             fault = DriftSensorFault(rate_per_second=command.value)
 
-        self.coordinator.inject_sensor_fault(channel, fault)
+        self.service.inject_sensor_fault(channel, fault)
         self._print(
             f"Injected {channel.value} sensor fault: "
-            f"{self.coordinator.sensor_fault_injector.describe(channel)}"
+            f"{self.service.describe_sensor_fault(channel)}"
         )
 
     def _clear_sensor_fault(self, command: ParsedCommand) -> None:
@@ -302,19 +330,19 @@ class InteractiveEngineSimulation:
             if command.argument == "rpm"
             else SensorChannel.EXHAUST_TEMPERATURE
         )
-        self.coordinator.clear_sensor_fault(channel)
+        self.service.clear_sensor_fault(channel)
         self._print(f"Cleared {channel.value} sensor fault")
 
     def _print_faults(self) -> None:
         """Print active injected faults and current validator health."""
 
-        snapshot = self.coordinator.snapshot
+        snapshot = self.service.get_latest_snapshot()
         self._print(
             "Rotor-speed fault: "
-            f"{self.coordinator.sensor_fault_injector.describe(SensorChannel.ROTOR_SPEED)} | "
+            f"{self.service.describe_sensor_fault(SensorChannel.ROTOR_SPEED)} | "
             f"health: {snapshot.rotor_speed_health.value}\n"
             "EGT fault: "
-            f"{self.coordinator.sensor_fault_injector.describe(SensorChannel.EXHAUST_TEMPERATURE)} | "
+            f"{self.service.describe_sensor_fault(SensorChannel.EXHAUST_TEMPERATURE)} | "
             f"health: {snapshot.exhaust_temperature_health.value}\n"
             f"Aggregate sensor health: {snapshot.aggregate_sensor_health.value}"
         )
@@ -322,12 +350,14 @@ class InteractiveEngineSimulation:
     def _print_new_events(self) -> None:
         """Print newly recorded simulation events once."""
 
-        events = self.coordinator.event_log.events
-        for event in events[self._printed_event_count :]:
+        events = self.service.get_recent_events()
+        for event in events:
+            if event.event_sequence <= self._last_printed_event_sequence:
+                continue
             self._print(
                 f"EVENT t={event.simulation_time_s:.2f} s: {event.message}"
             )
-        self._printed_event_count = len(events)
+            self._last_printed_event_sequence = event.event_sequence
 
     def _print_transition(self, snapshot: EngineSimulationSnapshot) -> None:
         """Print a state transition immediately when one occurs."""
@@ -345,7 +375,7 @@ class InteractiveEngineSimulation:
         self._print(
             f"t={snapshot.simulation_time_s:6.2f} s | "
             f"state={snapshot.operating_state.value:8s} | "
-            f"throttle={self._throttle_command:.3f}\n"
+            f"throttle={snapshot.throttle_demand:.3f}\n"
             "Rotor speed: "
             f"truth={snapshot.rotor_speed_rpm:.0f} rpm | "
             f"raw={self._format_value(snapshot.measured_rotor_speed_rpm, '.0f')} | "
@@ -364,7 +394,7 @@ class InteractiveEngineSimulation:
             f"diagnostic={snapshot.exhaust_temperature_diagnostic_reason.value}\n"
             f"Sensor health={snapshot.aggregate_sensor_health.value} | "
             f"automatic FAULT={snapshot.automatic_sensor_fault_request_active} | "
-            f"response={snapshot.sensor_fault_response_reason.value} | "
+            f"response={snapshot.sensor_fault_response_reason} | "
             f"sample periods={snapshot.rotor_speed_sensor_sample_period_s:.3f}/"
             f"{snapshot.exhaust_temperature_sensor_sample_period_s:.3f} s | "
             f"fuel={snapshot.requested_fuel_command:.3f}/"
@@ -427,8 +457,60 @@ class InteractiveEngineSimulation:
         self._print(
             "Commands: help, start, throttle <0.0..1.0>, shutdown, "
             "status, protection, fault, reset, faults, inject <fault> [value], "
-            "clear_fault <rpm|egt>, clear_faults, quit"
+            "clear_fault <rpm|egt>, clear_faults, record start [run_name], "
+            "record stop, record status, mark <text>, runs, quit"
         )
+
+    def _process_recording_command(self, command: ParsedCommand) -> None:
+        """Start, stop, or report a run recording."""
+
+        if command.argument == "start":
+            try:
+                run_directory = self.service.start_recording(command.text)
+            except (OSError, RuntimeError) as error:
+                self._print(f"Recording error: {error}")
+                return
+            self._print(f"Recording started: {run_directory}")
+        elif command.argument == "stop":
+            summary = self.service.stop_recording()
+            if summary is None:
+                self._print("No recording is active.")
+            else:
+                self._print(
+                    "Recording stopped: "
+                    f"{summary.telemetry_sample_count} samples, "
+                    f"{summary.event_count} events"
+                )
+        else:
+            self._print_recording_status()
+
+    def _print_recording_status(self) -> None:
+        """Print current or most recent recorder status."""
+
+        status = self.service.get_recording_status()
+        if status is None:
+            self._print(
+                "Recording inactive | no run | "
+                f"period={self.service.recorder.parameters.telemetry_sampling_period_s:.3f} s"
+            )
+            return
+        activity = "active" if self.service.recorder.is_recording else "inactive"
+        self._print(
+            f"Recording {activity} | status={status.completion_status} | "
+            f"name={status.run_name} | directory={status.run_directory} | "
+            f"samples={status.telemetry_sample_count} | "
+            f"events={status.event_count} | "
+            f"period={status.telemetry_sampling_period_s:.3f} s"
+        )
+
+    def _print_recent_runs(self) -> None:
+        """Print a bounded list of recent run directories."""
+
+        run_directories = self.service.list_recent_runs()
+        if not run_directories:
+            self._print("No recorded runs found.")
+            return
+        self._print("Recent runs:\n" + "\n".join(map(str, run_directories)))
 
     @staticmethod
     def _format_limiters(limiters: tuple[ProtectionLimiter, ...]) -> str:
@@ -466,13 +548,6 @@ class InteractiveEngineSimulation:
         """Print to the configured application output stream."""
 
         print(message, file=self.output_stream, flush=True)
-
-    @staticmethod
-    def _clamp(value: float, minimum: float, maximum: float) -> float:
-        """Limit a value to a closed interval."""
-
-        return max(minimum, min(value, maximum))
-
 
 def run_scripted_smoke_test() -> None:
     """Run an accelerated startup and shutdown without terminal input."""

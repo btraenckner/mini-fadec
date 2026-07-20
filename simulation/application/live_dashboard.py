@@ -51,7 +51,7 @@ class LiveEngineDashboard:
         self.result_path = Path(result_path)
 
         self._closed = False
-        self._displayed_event_count = 0
+        self._last_displayed_event_sequence = 0
         self._last_update_time = time.monotonic()
         self._figure, self._plot_axes = self._create_figure()
         self._create_status_panel()
@@ -64,7 +64,9 @@ class LiveEngineDashboard:
         )
         self._timer.add_callback(self._on_timer)
         self._figure.canvas.mpl_connect("close_event", self._on_figure_close)
-        self._refresh_dashboard(self.dashboard_simulation.coordinator.snapshot)
+        self._refresh_dashboard(
+            self.dashboard_simulation.service.get_latest_snapshot()
+        )
 
     @property
     def figure(self) -> plt.Figure:
@@ -601,15 +603,16 @@ class LiveEngineDashboard:
             linewidth=2.0,
             label="Validated",
         )
+        snapshot = self.dashboard_simulation.service.get_latest_snapshot()
         egt_axis.axhline(
-            self.dashboard_simulation.coordinator.egt_limiter.parameters.intervention_exhaust_temperature_c,
+            snapshot.egt_intervention_temperature_c,
             color=self._WARNING_COLOR,
             linestyle="--",
             linewidth=1.2,
             label="Intervention",
         )
         egt_axis.axhline(
-            self.dashboard_simulation.coordinator.egt_limiter.parameters.maximum_exhaust_temperature_c,
+            snapshot.egt_maximum_temperature_c,
             color=self._DANGER_COLOR,
             linestyle="--",
             linewidth=1.2,
@@ -828,15 +831,19 @@ class LiveEngineDashboard:
             )
             self._transition_text.set_color(self._ACCENT_COLOR)
 
-        events = self.dashboard_simulation.coordinator.event_log.events
-        if len(events) > self._displayed_event_count:
+        events = self.dashboard_simulation.service.get_recent_events()
+        if (
+            events
+            and events[-1].event_sequence
+            > self._last_displayed_event_sequence
+        ):
             latest_event = events[-1]
             self._transition_text.set_text(
                 f"●  {latest_event.simulation_time_s:6.2f} s  /  "
                 f"{latest_event.message}"
             )
             self._transition_text.set_color(self._WARNING_COLOR)
-            self._displayed_event_count = len(events)
+            self._last_displayed_event_sequence = latest_event.event_sequence
 
     def _on_throttle_changed(self, throttle_command: float) -> None:
         """Apply a persistent throttle demand from the slider."""
@@ -890,7 +897,7 @@ class LiveEngineDashboard:
         fault_controls.set_value_text(self._fault_value_text_box.text)
         try:
             message = fault_controls.inject(
-                self.dashboard_simulation.coordinator
+                self.dashboard_simulation.service
             )
         except ValueError as error:
             self._set_fault_feedback(
@@ -904,7 +911,7 @@ class LiveEngineDashboard:
         """Clear the selected channel and expose validator recovery."""
 
         message = self.dashboard_simulation.sensor_fault_controls.clear_selected(
-            self.dashboard_simulation.coordinator
+            self.dashboard_simulation.service
         )
         self._set_fault_feedback(message, self._ACCENT_COLOR)
 
@@ -912,7 +919,7 @@ class LiveEngineDashboard:
         """Clear all channel faults and expose validator recovery."""
 
         message = self.dashboard_simulation.sensor_fault_controls.clear_all(
-            self.dashboard_simulation.coordinator
+            self.dashboard_simulation.service
         )
         self._set_fault_feedback(message, self._ACCENT_COLOR)
 

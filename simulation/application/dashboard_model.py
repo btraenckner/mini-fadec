@@ -3,11 +3,13 @@
 import math
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Protocol
 
 from simulation.application.engine_simulation import (
     EngineSimulationCoordinator,
     EngineSimulationSnapshot,
 )
+from simulation.application.simulation_service import SimulationService
 from simulation.operation.engine_state import EngineOperatingState
 from simulation.operation.state_machine import EngineOperationRequest
 from simulation.sensors.fault_injection import (
@@ -31,6 +33,22 @@ class DashboardFaultType(Enum):
     FORCED_VALUE = "Forced value"
     EXCESSIVE_NOISE = "Noise"
     DRIFT = "Drift"
+
+
+class SensorFaultControlInterface(Protocol):
+    """Narrow fault-control API shared by dashboard and terminal clients."""
+
+    def inject_sensor_fault(
+        self,
+        channel: SensorChannel,
+        fault: SensorFaultDefinition,
+    ) -> None: ...
+
+    def clear_sensor_fault(self, channel: SensorChannel) -> None: ...
+
+    def clear_sensor_faults(self) -> None: ...
+
+    def describe_sensor_fault(self, channel: SensorChannel) -> str: ...
 
 
 @dataclass
@@ -59,30 +77,30 @@ class DashboardSensorFaultControls:
 
         self.value_text = value_text.strip()
 
-    def inject(self, coordinator: EngineSimulationCoordinator) -> str:
+    def inject(self, service: SensorFaultControlInterface) -> str:
         """Build and activate the selected typed fault definition."""
 
         fault = self._fault_definition()
-        coordinator.inject_sensor_fault(self.selected_channel, fault)
+        service.inject_sensor_fault(self.selected_channel, fault)
         self.last_action_message = (
             f"Injected {self._channel_name()}: "
-            f"{coordinator.sensor_fault_injector.describe(self.selected_channel)}"
+            f"{service.describe_sensor_fault(self.selected_channel)}"
         )
         return self.last_action_message
 
-    def clear_selected(self, coordinator: EngineSimulationCoordinator) -> str:
+    def clear_selected(self, service: SensorFaultControlInterface) -> str:
         """Clear the selected channel and begin validator recovery."""
 
-        coordinator.clear_sensor_fault(self.selected_channel)
+        service.clear_sensor_fault(self.selected_channel)
         self.last_action_message = (
             f"Cleared {self._channel_name()}; validation recovery in progress"
         )
         return self.last_action_message
 
-    def clear_all(self, coordinator: EngineSimulationCoordinator) -> str:
+    def clear_all(self, service: SensorFaultControlInterface) -> str:
         """Clear both channels and begin validator recovery."""
 
-        coordinator.clear_sensor_faults()
+        service.clear_sensor_faults()
         self.last_action_message = (
             "Cleared all sensor faults; validation recovery in progress"
         )
@@ -335,6 +353,7 @@ class DashboardSimulation:
     def __init__(
         self,
         coordinator: EngineSimulationCoordinator | None = None,
+        service: SimulationService | None = None,
         controls: DashboardControls | None = None,
         sensor_fault_controls: DashboardSensorFaultControls | None = None,
         history: DashboardHistory | None = None,
@@ -342,7 +361,14 @@ class DashboardSimulation:
         time_step_s: float = 0.01,
         maximum_catch_up_s: float = 0.25,
     ) -> None:
-        self.coordinator = coordinator or EngineSimulationCoordinator()
+        if coordinator is not None and service is not None:
+            raise ValueError("provide either coordinator or service, not both")
+        self.service = service or SimulationService(
+            coordinator=coordinator,
+            time_step_s=time_step_s,
+        )
+        # Compatibility view for integrations that only read the coordinator.
+        self.coordinator = self.service.coordinator
         self.controls = controls or DashboardControls()
         self.sensor_fault_controls = (
             sensor_fault_controls or DashboardSensorFaultControls()
@@ -363,11 +389,9 @@ class DashboardSimulation:
             self.maximum_catch_up_s,
         )
         while self._accumulated_time_s >= self.time_step_s:
-            snapshot = self.coordinator.step(
-                request=self.controls.consume_request(),
-                time_step_s=self.time_step_s,
-            )
+            self.service.apply_request(self.controls.consume_request())
+            snapshot = self.service.step()
             self.history.append(snapshot)
             self._accumulated_time_s -= self.time_step_s
 
-        return self.coordinator.snapshot
+        return self.service.get_latest_snapshot()
