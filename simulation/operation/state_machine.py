@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from simulation.core.types import SensorData
+from simulation.core.types import SensorData, ValidatedSensorData
 from simulation.operation.engine_state import EngineOperatingState
 
 
@@ -64,7 +64,7 @@ class EngineStateMachine:
     def update(
         self,
         request: EngineOperationRequest,
-        sensor_data: SensorData,
+        sensor_data: SensorData | ValidatedSensorData,
         time_step_s: float,
     ) -> EngineOperatingCommand:
         """Evaluate transitions and return the resulting operating command."""
@@ -78,7 +78,7 @@ class EngineStateMachine:
     def _evaluate_transitions(
         self,
         request: EngineOperationRequest,
-        sensor_data: SensorData,
+        sensor_data: SensorData | ValidatedSensorData,
     ) -> None:
         """Evaluate explicit transition conditions in priority order."""
 
@@ -89,6 +89,7 @@ class EngineStateMachine:
         if self._state is EngineOperatingState.FAULT:
             if (
                 request.reset_requested
+                and sensor_data.rotor_speed_rpm is not None
                 and sensor_data.rotor_speed_rpm
                 <= self.parameters.stopped_speed_threshold_rpm
             ):
@@ -111,7 +112,8 @@ class EngineStateMachine:
 
         if self._state is EngineOperatingState.CRANKING:
             if (
-                sensor_data.rotor_speed_rpm
+                sensor_data.rotor_speed_rpm is not None
+                and sensor_data.rotor_speed_rpm
                 >= self.parameters.ignition_enable_speed_rpm
             ):
                 self._state = EngineOperatingState.IGNITION
@@ -119,11 +121,13 @@ class EngineStateMachine:
 
         if self._state is EngineOperatingState.IGNITION:
             light_off_detected = (
-                sensor_data.exhaust_temperature_c
+                sensor_data.exhaust_temperature_c is not None
+                and sensor_data.exhaust_temperature_c
                 >= self.parameters.light_off_temperature_c
             )
             self_sustaining_speed_reached = (
-                sensor_data.rotor_speed_rpm
+                sensor_data.rotor_speed_rpm is not None
+                and sensor_data.rotor_speed_rpm
                 >= self.parameters.self_sustaining_speed_rpm
             )
             if light_off_detected and self_sustaining_speed_reached:
@@ -141,7 +145,8 @@ class EngineStateMachine:
             return
 
         if self._state is EngineOperatingState.SHUTDOWN and (
-            sensor_data.rotor_speed_rpm
+            sensor_data.rotor_speed_rpm is not None
+            and sensor_data.rotor_speed_rpm
             <= self.parameters.stopped_speed_threshold_rpm
         ):
             self._state = EngineOperatingState.OFF
