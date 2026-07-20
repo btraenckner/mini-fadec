@@ -42,7 +42,9 @@ and simulation-only diagnostic comparisons use truth directly.
 - `simulation/operation/` owns the explicit engine operating-state machine.
 - `simulation/controllers/` schedules demanded speed and calculates requested
   fuel.
-- `simulation/protection/` limits the requested command using measured EGT.
+- `simulation/protection/` estimates rotor acceleration, evaluates EGT,
+  acceleration, deceleration, and overspeed protection, and centrally
+  arbitrates the final fuel command.
 - `simulation/application/` composes the components and provides terminal and
   graphical interactive applications.
 - `simulation/examples/` contains open-loop and closed-loop demonstrations.
@@ -130,6 +132,82 @@ Manual FAULT remains available. A reset request is passed to the state machine
 only after both sensor channels recover to `VALID`; the existing stopped-speed
 condition still applies.
 
+## Central Fuel Protection
+
+The `ProtectionManager` is the sole normal fuel authority after the speed
+controller. The controller regulates speed, the state machine supervises the
+operating mode, and the validator determines signal health; none of those
+components selects between protection fuel limits.
+
+```text
+Validated sensors
+    -> speed controller
+    -> requested fuel
+    -> Protection Manager
+       -> EGT upper limit
+       -> acceleration upper limit
+       -> overspeed upper limit
+       -> deceleration lower limit
+       -> state and fault constraints
+    -> final fuel
+    -> actuator command
+    -> engine model
+```
+
+The manager clamps fuel to 0.0 through 1.0 and evaluates candidate upper
+limits from requested fuel, EGT protection, acceleration protection,
+overspeed protection, and the current state's maximum. Its lower bounds are
+the global minimum and the normal-operation deceleration minimum. In the
+absence of a conflict, arbitration is equivalent to:
+
+```text
+upper_allowed = min(requested, EGT, acceleration, overspeed, state maximum)
+lower_allowed = max(global minimum, deceleration minimum)
+final fuel = max(lower_allowed, upper_allowed)
+```
+
+If a lower bound exceeds a safety upper limit, the safety upper limit wins and
+an arbitration-conflict diagnostic is reported. OFF, SHUTDOWN, FAULT, a
+critical sensor condition, or hard overspeed bypasses every lower bound and
+commands exactly zero fuel. Thus normal deceleration protection can never
+defeat a shutdown or safety cutoff.
+
+`ProtectionResult` retains the requested and final commands, every candidate
+limit, estimated acceleration and deceleration, speed ratio, overspeed flags,
+fault and cutoff requests, and typed diagnostic reasons. Equal limiting
+values are all reported within a numeric tolerance. The deterministic primary
+diagnostic priority is HARD_CUTOFF, SENSOR_FAULT, OVERSPEED, EGT,
+ACCELERATION, DECELERATION, STATE, then NONE. This priority labels the result;
+it does not change numeric arbitration.
+
+Rotor acceleration is calculated only from consecutive validated speed
+samples. The first valid sample initializes the estimator at zero, state
+changes and resets clear its history, and unavailable validated speed produces
+no estimate. A configurable first-order filter with a 0.05 s time constant
+reduces measurement-noise sensitivity. This adds a small, deterministic delay.
+
+The initial acceleration intervention region is 12,000 to 20,000 rpm/s.
+Above the soft threshold the acceleration upper limit decreases linearly
+toward zero. Fuel restriction is immediate, while release is limited to 1.0
+command unit/s to avoid limit cycling. Acceleration protection is enabled in
+IDLE and RUNNING, preserving CRANKING and IGNITION behavior.
+
+The deceleration limiter is a normal-operation lower bound based on the prior
+manager-approved command. It permits fuel to decrease by at most 0.5 command
+unit/s in IDLE and RUNNING. It is reset or bypassed during cutoff conditions.
+
+Overspeed thresholds are derived from the controller scheduler's configured
+maximum normal speed. Soft intervention begins at 1.03 times that speed and
+linearly reduces the upper fuel limit. At exactly 1.08 times maximum normal
+speed, or above, the manager commands immediate zero fuel and requests the
+state machine's FAULT path. Protection receives validated speed and EGT only;
+the existing sensor-fault response policy supplies the manager with an
+explicit critical-sensor condition rather than duplicating validation rules.
+
+All filter constants, limiter thresholds, ratios, and slew rates in this
+section are unvalidated grey-box simulation assumptions, not certified engine
+limits.
+
 ## Fixed-Step Execution
 
 For each coordinated simulation step:
@@ -139,9 +217,12 @@ For each coordinated simulation step:
 3. Validate raw measurements and update channel health.
 4. Determine warnings, automatic FAULT request, and safe fuel cutoff.
 5. Evaluate operating-state transitions using validated conditions.
-6. Calculate requested fuel and apply EGT protection using validated data.
-7. Advance the physical engine model with the allowed actuator command.
-8. Record truth, raw and validated values, diagnostics, events, and outputs.
+6. Calculate requested fuel from startup strategy or closed-loop control.
+7. Evaluate centralized fuel protection using validated data and operating
+   context.
+8. Advance the physical engine model with the manager-approved actuator
+   command.
+9. Record truth, raw and validated values, diagnostics, events, and outputs.
 
 ## Current Limitations
 
@@ -150,4 +231,8 @@ reconstruction, sensor filters, model-based diagnosis, communication-bus
 faults, or hardware drivers. Injected faults are simulation controls rather
 than production FADEC functionality. Detailed compressor maps, combustion
 chemistry, environmental corrections, actuator dynamics, and real-time
-hardware communication also remain outside the current scope.
+hardware communication also remain outside the current scope. Acceleration and
+deceleration protection are simplified signal- and command-rate constraints;
+they do not model compressor surge margin, flameout, or combustor stability.
+Overspeed protection assumes one validated speed channel and does not model
+redundant trip hardware.
