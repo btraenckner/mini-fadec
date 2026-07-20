@@ -1,6 +1,8 @@
 """Testable control and history model for the live engine dashboard."""
 
+import math
 from dataclasses import dataclass, field
+from enum import Enum
 
 from simulation.application.engine_simulation import (
     EngineSimulationCoordinator,
@@ -8,6 +10,185 @@ from simulation.application.engine_simulation import (
 )
 from simulation.operation.engine_state import EngineOperatingState
 from simulation.operation.state_machine import EngineOperationRequest
+from simulation.sensors.fault_injection import (
+    BiasSensorFault,
+    DriftSensorFault,
+    DropoutSensorFault,
+    ExcessiveNoiseSensorFault,
+    ForcedValueSensorFault,
+    SensorChannel,
+    SensorFaultDefinition,
+    StuckSensorFault,
+)
+
+
+class DashboardFaultType(Enum):
+    """Fault types selectable from the live dashboard."""
+
+    BIAS = "Bias"
+    STUCK = "Stuck"
+    DROPOUT = "Dropout"
+    FORCED_VALUE = "Forced value"
+    EXCESSIVE_NOISE = "Noise"
+    DRIFT = "Drift"
+
+
+@dataclass
+class DashboardSensorFaultControls:
+    """Testable sensor-fault selection and coordinator actions."""
+
+    selected_channel: SensorChannel = SensorChannel.ROTOR_SPEED
+    selected_fault_type: DashboardFaultType = DashboardFaultType.BIAS
+    value_text: str = "5000"
+    last_action_message: str = "No sensor fault action requested"
+
+    def select_channel(self, channel: SensorChannel) -> None:
+        """Select the channel targeted by the next dashboard action."""
+
+        self.selected_channel = channel
+        self.value_text = self.suggested_value_text()
+
+    def select_fault_type(self, fault_type: DashboardFaultType) -> None:
+        """Select the fault type targeted by the next dashboard action."""
+
+        self.selected_fault_type = fault_type
+        self.value_text = self.suggested_value_text()
+
+    def set_value_text(self, value_text: str) -> None:
+        """Store the optional numeric value entered by the operator."""
+
+        self.value_text = value_text.strip()
+
+    def inject(self, coordinator: EngineSimulationCoordinator) -> str:
+        """Build and activate the selected typed fault definition."""
+
+        fault = self._fault_definition()
+        coordinator.inject_sensor_fault(self.selected_channel, fault)
+        self.last_action_message = (
+            f"Injected {self._channel_name()}: "
+            f"{coordinator.sensor_fault_injector.describe(self.selected_channel)}"
+        )
+        return self.last_action_message
+
+    def clear_selected(self, coordinator: EngineSimulationCoordinator) -> str:
+        """Clear the selected channel and begin validator recovery."""
+
+        coordinator.clear_sensor_fault(self.selected_channel)
+        self.last_action_message = (
+            f"Cleared {self._channel_name()}; validation recovery in progress"
+        )
+        return self.last_action_message
+
+    def clear_all(self, coordinator: EngineSimulationCoordinator) -> str:
+        """Clear both channels and begin validator recovery."""
+
+        coordinator.clear_sensor_faults()
+        self.last_action_message = (
+            "Cleared all sensor faults; validation recovery in progress"
+        )
+        return self.last_action_message
+
+    def suggested_value_text(self) -> str:
+        """Return a channel-specific initial value for the selected fault."""
+
+        suggested_values = {
+            (SensorChannel.ROTOR_SPEED, DashboardFaultType.BIAS): "5000",
+            (SensorChannel.EXHAUST_TEMPERATURE, DashboardFaultType.BIAS): "40",
+            (SensorChannel.ROTOR_SPEED, DashboardFaultType.STUCK): "",
+            (SensorChannel.EXHAUST_TEMPERATURE, DashboardFaultType.STUCK): "",
+            (SensorChannel.ROTOR_SPEED, DashboardFaultType.DROPOUT): "",
+            (SensorChannel.EXHAUST_TEMPERATURE, DashboardFaultType.DROPOUT): "",
+            (
+                SensorChannel.ROTOR_SPEED,
+                DashboardFaultType.FORCED_VALUE,
+            ): "160000",
+            (
+                SensorChannel.EXHAUST_TEMPERATURE,
+                DashboardFaultType.FORCED_VALUE,
+            ): "1000",
+            (
+                SensorChannel.ROTOR_SPEED,
+                DashboardFaultType.EXCESSIVE_NOISE,
+            ): "1000",
+            (
+                SensorChannel.EXHAUST_TEMPERATURE,
+                DashboardFaultType.EXCESSIVE_NOISE,
+            ): "20",
+            (SensorChannel.ROTOR_SPEED, DashboardFaultType.DRIFT): "500",
+            (
+                SensorChannel.EXHAUST_TEMPERATURE,
+                DashboardFaultType.DRIFT,
+            ): "20",
+        }
+        return suggested_values[
+            (self.selected_channel, self.selected_fault_type)
+        ]
+
+    def value_hint(self) -> str:
+        """Return concise input guidance for the selected fault."""
+
+        unit = (
+            "rpm" if self.selected_channel is SensorChannel.ROTOR_SPEED else "°C"
+        )
+        if self.selected_fault_type is DashboardFaultType.STUCK:
+            return f"Value [{unit}] optional; blank freezes current measurement"
+        if self.selected_fault_type is DashboardFaultType.DROPOUT:
+            return "Value ignored; raw measurement becomes unavailable"
+        if self.selected_fault_type is DashboardFaultType.EXCESSIVE_NOISE:
+            return f"Additional Gaussian standard deviation [{unit}]"
+        if self.selected_fault_type is DashboardFaultType.DRIFT:
+            return f"Linear drift rate [{unit}/s]"
+        return f"Fault value [{unit}]"
+
+    def _fault_definition(self) -> SensorFaultDefinition:
+        """Convert the current selection into one typed fault definition."""
+
+        if self.selected_fault_type is DashboardFaultType.DROPOUT:
+            return DropoutSensorFault()
+        if self.selected_fault_type is DashboardFaultType.STUCK:
+            return StuckSensorFault(value=self._optional_value())
+
+        value = self._required_value()
+        if self.selected_fault_type is DashboardFaultType.BIAS:
+            return BiasSensorFault(offset=value)
+        if self.selected_fault_type is DashboardFaultType.FORCED_VALUE:
+            return ForcedValueSensorFault(value=value)
+        if self.selected_fault_type is DashboardFaultType.EXCESSIVE_NOISE:
+            return ExcessiveNoiseSensorFault(standard_deviation=value)
+        return DriftSensorFault(rate_per_second=value)
+
+    def _required_value(self) -> float:
+        """Parse a required finite numeric fault value."""
+
+        if not self.value_text:
+            raise ValueError("the selected sensor fault requires a value")
+        return self._parse_value(self.value_text)
+
+    def _optional_value(self) -> float | None:
+        """Parse an optional explicit stuck value."""
+
+        if not self.value_text:
+            return None
+        return self._parse_value(self.value_text)
+
+    @staticmethod
+    def _parse_value(value_text: str) -> float:
+        """Parse one numeric dashboard field with a clear error."""
+
+        try:
+            value = float(value_text)
+        except ValueError as error:
+            raise ValueError("sensor fault value must be numeric") from error
+        if not math.isfinite(value):
+            raise ValueError("sensor fault value must be finite")
+        return value
+
+    def _channel_name(self) -> str:
+        """Return the selected channel's user-facing name."""
+
+        if self.selected_channel is SensorChannel.ROTOR_SPEED:
+            return "rotor-speed sensor"
+        return "EGT sensor"
 
 
 @dataclass
@@ -78,9 +259,17 @@ class DashboardHistory:
     throttle_commands: list[float] = field(default_factory=list)
     speed_setpoints_rpm: list[float] = field(default_factory=list)
     rotor_speeds_rpm: list[float] = field(default_factory=list)
-    measured_rotor_speeds_rpm: list[float] = field(default_factory=list)
+    measured_rotor_speeds_rpm: list[float | None] = field(default_factory=list)
+    validated_rotor_speeds_rpm: list[float | None] = field(
+        default_factory=list
+    )
     exhaust_temperatures_c: list[float] = field(default_factory=list)
-    measured_exhaust_temperatures_c: list[float] = field(default_factory=list)
+    measured_exhaust_temperatures_c: list[float | None] = field(
+        default_factory=list
+    )
+    validated_exhaust_temperatures_c: list[float | None] = field(
+        default_factory=list
+    )
     requested_fuel_commands: list[float] = field(default_factory=list)
     allowed_fuel_commands: list[float] = field(default_factory=list)
     estimated_thrusts_n: list[float] = field(default_factory=list)
@@ -97,9 +286,15 @@ class DashboardHistory:
         self.measured_rotor_speeds_rpm.append(
             snapshot.measured_rotor_speed_rpm
         )
+        self.validated_rotor_speeds_rpm.append(
+            snapshot.validated_rotor_speed_rpm
+        )
         self.exhaust_temperatures_c.append(snapshot.exhaust_temperature_c)
         self.measured_exhaust_temperatures_c.append(
             snapshot.measured_exhaust_temperature_c
+        )
+        self.validated_exhaust_temperatures_c.append(
+            snapshot.validated_exhaust_temperature_c
         )
         self.requested_fuel_commands.append(snapshot.requested_fuel_command)
         self.allowed_fuel_commands.append(snapshot.allowed_fuel_command)
@@ -121,8 +316,10 @@ class DashboardHistory:
             self.speed_setpoints_rpm,
             self.rotor_speeds_rpm,
             self.measured_rotor_speeds_rpm,
+            self.validated_rotor_speeds_rpm,
             self.exhaust_temperatures_c,
             self.measured_exhaust_temperatures_c,
+            self.validated_exhaust_temperatures_c,
             self.requested_fuel_commands,
             self.allowed_fuel_commands,
             self.estimated_thrusts_n,
@@ -139,6 +336,7 @@ class DashboardSimulation:
         self,
         coordinator: EngineSimulationCoordinator | None = None,
         controls: DashboardControls | None = None,
+        sensor_fault_controls: DashboardSensorFaultControls | None = None,
         history: DashboardHistory | None = None,
         *,
         time_step_s: float = 0.01,
@@ -146,6 +344,9 @@ class DashboardSimulation:
     ) -> None:
         self.coordinator = coordinator or EngineSimulationCoordinator()
         self.controls = controls or DashboardControls()
+        self.sensor_fault_controls = (
+            sensor_fault_controls or DashboardSensorFaultControls()
+        )
         self.history = history or DashboardHistory()
         self.time_step_s = time_step_s
         self.maximum_catch_up_s = maximum_catch_up_s

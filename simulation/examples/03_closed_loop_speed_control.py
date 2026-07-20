@@ -7,11 +7,17 @@ from simulation.controllers.speed_controller import (
     LinearThrottleToSpeedScheduler,
     PIEngineSpeedController,
 )
-from simulation.core.types import AmbientConditions, ControlRequest
+from simulation.core.types import AmbientConditions, ControlRequest, SensorData
 from simulation.models.engine_model import FirstOrderEngineModel
+from simulation.operation.engine_state import EngineOperatingState
+from simulation.sensors.fault_injection import SensorFaultInjector
 from simulation.sensors.sensor_model import (
     ConfigurableSensorModel,
     SensorModelConfiguration,
+)
+from simulation.validation.sensor_validation import (
+    SensorSignalValidator,
+    SensorValidationContext,
 )
 
 
@@ -37,7 +43,10 @@ def main() -> None:
     sensor_model = ConfigurableSensorModel(
         configuration=SensorModelConfiguration(random_seed=0)
     )
+    fault_injector = SensorFaultInjector(random_seed=0)
+    sensor_validator = SensorSignalValidator()
     ambient_conditions = AmbientConditions()
+    previous_fuel_command = 0.0
 
     times_s = np.arange(
         start=0.0,
@@ -57,9 +66,33 @@ def main() -> None:
     for time_s in times_s:
         throttle_command = throttle_command_schedule(time_s)
         control_request = ControlRequest(throttle_command=throttle_command)
-        sensor_data = sensor_model.measure(
+        nominal_sensor_data = sensor_model.measure(
             engine_state=engine_model.state,
             time_step_s=time_step_s,
+        )
+        raw_sensor_data = fault_injector.apply(
+            nominal_sensor_data,
+            time_step_s=time_step_s,
+        )
+        validation_result = sensor_validator.update(
+            raw_sensor_data,
+            context=SensorValidationContext(
+                operating_state=EngineOperatingState.RUNNING,
+                fuel_enabled=True,
+                fuel_command=previous_fuel_command,
+                throttle_command=throttle_command,
+            ),
+            time_step_s=time_step_s,
+        )
+        validated_data = validation_result.sensor_data
+        if (
+            validated_data.rotor_speed_rpm is None
+            or validated_data.exhaust_temperature_c is None
+        ):
+            raise RuntimeError("validated sensor data unavailable")
+        sensor_data = SensorData(
+            rotor_speed_rpm=validated_data.rotor_speed_rpm,
+            exhaust_temperature_c=validated_data.exhaust_temperature_c,
         )
 
         actuator_command = controller.update(
@@ -72,6 +105,7 @@ def main() -> None:
             ambient_conditions=ambient_conditions,
             time_step_s=time_step_s,
         )
+        previous_fuel_command = actuator_command.fuel_command
 
         throttle_commands.append(throttle_command)
         speed_setpoints_rpm.append(
