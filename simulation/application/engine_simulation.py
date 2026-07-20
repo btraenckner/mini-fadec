@@ -125,10 +125,7 @@ class EngineSimulationCoordinator:
         self._simulation_time_s = 0.0
         self._speed_control_was_enabled = False
         self._automatic_fault_was_active = False
-        self._last_nominal_sensor_data = SensorData(
-            rotor_speed_rpm=self.engine_model.state.rotor_speed_rpm,
-            exhaust_temperature_c=self.engine_model.state.exhaust_temperature_c,
-        )
+        self._last_nominal_sensor_data: SensorData | None = None
         self._snapshot = self._initial_snapshot()
 
     @property
@@ -144,11 +141,13 @@ class EngineSimulationCoordinator:
     ) -> None:
         """Activate or replace a simulation-only fault on one sensor channel."""
 
-        current_measurement = (
-            self._last_nominal_sensor_data.rotor_speed_rpm
-            if channel is SensorChannel.ROTOR_SPEED
-            else self._last_nominal_sensor_data.exhaust_temperature_c
-        )
+        current_measurement = None
+        if self._last_nominal_sensor_data is not None:
+            current_measurement = (
+                self._last_nominal_sensor_data.rotor_speed_rpm
+                if channel is SensorChannel.ROTOR_SPEED
+                else self._last_nominal_sensor_data.exhaust_temperature_c
+            )
         self.sensor_fault_injector.activate(
             channel=channel,
             fault=fault,
