@@ -11,4 +11,3 @@ class SnapshotSink(Protocol):
     def publish(self, snapshot: SimulationSnapshot) -> None:
         """Consume one immutable snapshot synchronously."""
         ...
-

@@ -117,4 +117,3 @@ def _run_git(repository_root: Path, *arguments: str) -> str:
         timeout=2.0,
     )
     return result.stdout.strip()
-
