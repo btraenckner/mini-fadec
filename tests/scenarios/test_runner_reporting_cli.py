@@ -344,4 +344,3 @@ def test_repeated_runs_are_isolated_and_normalized_results_are_deterministic(
     assert normalize_deterministic_result(first) == normalize_deterministic_result(
         second
     )
-

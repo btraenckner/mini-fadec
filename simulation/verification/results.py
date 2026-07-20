@@ -121,4 +121,3 @@ def requirement_failure_impacts_scenario(
         requirement.criticality is RequirementCriticality.INFO
         and requirement.info_failure_is_warning_only
     )
-

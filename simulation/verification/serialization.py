@@ -23,7 +23,6 @@ def write_json_exclusive(path: Path, payload: object) -> None:
         )
         output_file.write("\n")
 
-
 def update_json_object(path: Path, updates: dict[str, object]) -> None:
     """Extend an existing JSON object using JSON-safe values."""
 
@@ -41,4 +40,3 @@ def update_json_object(path: Path, updates: dict[str, object]) -> None:
             allow_nan=False,
         )
         output_file.write("\n")
-

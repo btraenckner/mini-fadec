@@ -84,4 +84,3 @@ class Requirement:
             raise ValueError("requirement description cannot be empty")
         if not callable(getattr(self.evaluator, "evaluate", None)):
             raise TypeError("requirement evaluator must implement evaluate")
-

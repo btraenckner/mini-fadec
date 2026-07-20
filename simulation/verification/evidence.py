@@ -23,4 +23,3 @@ class RequirementEvidence:
     first_violation_time_s: float | None = None
     maximum_violation: float | None = None
     diagnostic_message: str | None = None
-
