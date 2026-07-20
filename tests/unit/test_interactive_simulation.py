@@ -19,6 +19,7 @@ from simulation.sensors.fault_injection import SensorChannel
         "start",
         "shutdown",
         "status",
+        "protection",
         "fault",
         "faults",
         "reset",
@@ -116,6 +117,31 @@ def test_status_displays_raw_validated_and_health_telemetry() -> None:
     assert "Sensor health=VALID" in status_text
     assert "automatic FAULT=False" in status_text
     assert "sample periods=0.010/0.020 s" in status_text
+    assert "Protection: active=HARD_CUTOFF" in status_text
+    assert "limits EGT/acceleration/overspeed=" in status_text
+    assert "deceleration minimum=" in status_text
+
+
+def test_protection_command_displays_complete_arbitration_telemetry() -> None:
+    output_stream = StringIO()
+    simulation = InteractiveEngineSimulation(output_stream=output_stream)
+
+    simulation._print_protection(simulation.coordinator.snapshot)
+
+    protection_text = output_stream.getvalue()
+    assert "requested fuel:" in protection_text
+    assert "final fuel:" in protection_text
+    assert "active limiter:" in protection_text
+    assert "constraining:" in protection_text
+    assert "EGT upper limit:" in protection_text
+    assert "acceleration limit:" in protection_text
+    assert "overspeed limit:" in protection_text
+    assert "deceleration minimum:" in protection_text
+    assert "rotor acceleration:" in protection_text
+    assert "speed ratio:" in protection_text
+    assert "soft overspeed:" in protection_text
+    assert "hard overspeed:" in protection_text
+    assert "critical FAULT:" in protection_text
 
 
 def test_interactive_commands_inject_list_and_clear_faults() -> None:

@@ -14,6 +14,7 @@ from simulation.application.engine_simulation import (
 )
 from simulation.operation.engine_state import EngineOperatingState
 from simulation.operation.state_machine import EngineOperationRequest
+from simulation.protection.types import ProtectionLimiter
 from simulation.sensors.fault_injection import (
     BiasSensorFault,
     DriftSensorFault,
@@ -47,6 +48,7 @@ def parse_command(command_text: str) -> ParsedCommand:
         "start",
         "shutdown",
         "status",
+        "protection",
         "fault",
         "faults",
         "reset",
@@ -228,6 +230,8 @@ class InteractiveEngineSimulation:
                 shutdown_requested = True
             elif command.name == "status":
                 self._print_status(self.coordinator.snapshot)
+            elif command.name == "protection":
+                self._print_protection(self.coordinator.snapshot)
             elif command.name == "fault":
                 fault_requested = True
             elif command.name == "faults":
@@ -364,7 +368,57 @@ class InteractiveEngineSimulation:
             f"sample periods={snapshot.rotor_speed_sensor_sample_period_s:.3f}/"
             f"{snapshot.exhaust_temperature_sensor_sample_period_s:.3f} s | "
             f"fuel={snapshot.requested_fuel_command:.3f}/"
-            f"{snapshot.allowed_fuel_command:.3f}"
+            f"{snapshot.allowed_fuel_command:.3f}\n"
+            f"Protection: active={snapshot.active_protection_limiter.value} | "
+            "constraining="
+            f"{self._format_limiters(snapshot.constraining_protection_limiters)} | "
+            f"hard cutoff={snapshot.protection_hard_cutoff_active} | "
+            f"critical FAULT={snapshot.critical_protection_fault_request}\n"
+            "Protection limits EGT/acceleration/overspeed="
+            f"{snapshot.egt_fuel_limit:.3f}/"
+            f"{snapshot.acceleration_fuel_limit:.3f}/"
+            f"{snapshot.overspeed_fuel_limit:.3f} | "
+            "deceleration minimum="
+            f"{snapshot.deceleration_minimum_fuel_command:.3f} | "
+            "acceleration="
+            f"{self._format_optional(snapshot.rotor_acceleration_rpm_per_s, '.0f')} rpm/s | "
+            f"speed ratio={self._format_optional(snapshot.speed_ratio, '.3f')} | "
+            f"soft/hard overspeed={snapshot.soft_overspeed_active}/"
+            f"{snapshot.hard_overspeed_active}"
+        )
+
+    def _print_protection(self, snapshot: EngineSimulationSnapshot) -> None:
+        """Print the complete centralized fuel-protection result."""
+
+        self._print(
+            "Protection:\n"
+            f"  requested fuel:        {snapshot.requested_fuel_command:.3f}\n"
+            f"  final fuel:            {snapshot.allowed_fuel_command:.3f}\n"
+            f"  active limiter:        {snapshot.active_protection_limiter.value}\n"
+            "  constraining:          "
+            f"{self._format_limiters(snapshot.constraining_protection_limiters)}\n"
+            f"  EGT upper limit:       {snapshot.egt_fuel_limit:.3f}\n"
+            "  acceleration limit:    "
+            f"{snapshot.acceleration_fuel_limit:.3f}\n"
+            f"  overspeed limit:       {snapshot.overspeed_fuel_limit:.3f}\n"
+            "  deceleration minimum:  "
+            f"{snapshot.deceleration_minimum_fuel_command:.3f}\n"
+            f"  state maximum:         {snapshot.state_maximum_fuel_command:.3f}\n"
+            "  rotor acceleration:    "
+            f"{self._format_optional(snapshot.rotor_acceleration_rpm_per_s, '.0f')} rpm/s\n"
+            "  rotor deceleration:    "
+            f"{self._format_optional(snapshot.rotor_deceleration_rpm_per_s, '.0f')} rpm/s\n"
+            f"  speed ratio:           {self._format_optional(snapshot.speed_ratio, '.3f')}\n"
+            f"  soft overspeed:        {snapshot.soft_overspeed_active}\n"
+            f"  hard overspeed:        {snapshot.hard_overspeed_active}\n"
+            f"  hard cutoff:           {snapshot.protection_hard_cutoff_active}\n"
+            "  critical FAULT:        "
+            f"{snapshot.critical_protection_fault_request}\n"
+            f"  arbitration conflict:  {snapshot.protection_arbitration_conflict}\n"
+            "  diagnostics:           "
+            + ", ".join(
+                reason.value for reason in snapshot.protection_diagnostic_reasons
+            )
         )
 
     def _print_help(self) -> None:
@@ -372,9 +426,21 @@ class InteractiveEngineSimulation:
 
         self._print(
             "Commands: help, start, throttle <0.0..1.0>, shutdown, "
-            "status, fault, reset, faults, inject <fault> [value], "
+            "status, protection, fault, reset, faults, inject <fault> [value], "
             "clear_fault <rpm|egt>, clear_faults, quit"
         )
+
+    @staticmethod
+    def _format_limiters(limiters: tuple[ProtectionLimiter, ...]) -> str:
+        """Format enum-like limiter values without exposing collection syntax."""
+
+        return ",".join(limiter.value for limiter in limiters) or "NONE"
+
+    @staticmethod
+    def _format_optional(value: float | None, specification: str) -> str:
+        """Format optional protection telemetry."""
+
+        return "unavailable" if value is None else format(value, specification)
 
     @staticmethod
     def _format_value(value: float | None, format_specification: str) -> str:
