@@ -24,6 +24,7 @@ from simulation.sensors.fault_injection import SensorChannel
         "faults",
         "reset",
         "clear_faults",
+        "runs",
         "quit",
     ],
 )
@@ -41,6 +42,34 @@ def test_parse_command_accepts_numeric_throttle() -> None:
 
     assert command.name == "throttle"
     assert command.value == pytest.approx(0.7)
+
+
+@pytest.mark.parametrize(
+    ("command_text", "action", "text"),
+    [
+        ("record start", "start", None),
+        ("record start normal_run", "start", "normal_run"),
+        ("record stop", "stop", None),
+        ("record status", "status", None),
+    ],
+)
+def test_parse_command_accepts_recording_commands(
+    command_text: str,
+    action: str,
+    text: str | None,
+) -> None:
+    command = parse_command(command_text)
+
+    assert command.name == "record"
+    assert command.argument == action
+    assert command.text == text
+
+
+def test_parse_command_preserves_complete_marker_text() -> None:
+    command = parse_command("mark before large throttle step")
+
+    assert command.name == "mark"
+    assert command.text == "before large throttle step"
 
 
 @pytest.mark.parametrize(
@@ -95,6 +124,11 @@ def test_parse_command_accepts_channel_fault_clear(channel: str) -> None:
         "inject rpm_noise -1",
         "clear_fault",
         "clear_fault speed",
+        "record",
+        "record unknown",
+        "record stop now",
+        "record start too many names",
+        "mark",
     ],
 )
 def test_parse_command_rejects_malformed_commands(command_text: str) -> None:

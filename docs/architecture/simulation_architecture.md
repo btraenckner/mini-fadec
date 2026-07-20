@@ -47,6 +47,10 @@ and simulation-only diagnostic comparisons use truth directly.
   arbitrates the final fuel command.
 - `simulation/application/` composes the components and provides terminal and
   graphical interactive applications.
+- `simulation/telemetry/` owns the canonical runtime snapshot, typed events,
+  stable serializers, run metadata, and deterministic CSV recorder.
+- `simulation/tools/` provides offline run inspection and plotting without
+  participating in the live simulation loop.
 - `simulation/examples/` contains open-loop and closed-loop demonstrations.
 
 The component boundaries use the protocols and data types in
@@ -224,6 +228,120 @@ For each coordinated simulation step:
    command.
 9. Record truth, raw and validated values, diagnostics, events, and outputs.
 
+## Runtime Observability and Run Recording
+
+`SimulationSnapshot` is the one canonical observable representation of a
+simulation sampling instant. The coordinator constructs it after a complete
+fixed step and synchronously publishes the same immutable value to registered
+`SnapshotSink` adapters. Terminal status, run recording, automated scenarios,
+and dashboard views therefore do not reconstruct signals from component
+internals. Truth, raw measurements, validated signals, requested fuel,
+protection candidates, and final applied fuel remain explicitly distinguished.
+Unavailable sensor and derived values remain `None`; serializers do not turn
+them into zero.
+
+```text
+Operator / future dashboard
+        | commands
+        v
+SimulationService
+        |
+        v
+Simulation coordinator
+        |
+        v
+SimulationSnapshot
+   +------------+------------+---------------+------------------+
+   |            |            |               |
+   v            v            v               v
+Terminal     Recorder    Event monitor   Future dashboard
+```
+
+`SimulationService` is the application control boundary. It owns persistent
+throttle demand and one-shot start, shutdown, manual-fault, and reset requests.
+It also exposes typed fault injection and clearing, the latest snapshot, a
+bounded immutable recent-event view, snapshot-sink registration, recording
+lifecycle operations, markers, and recent-run discovery. Terminal and live
+dashboard controls call this service rather than mutating the model,
+controller, validator, state machine, or Protection Manager. A later UI may
+use the same in-process interface or add a narrow transport adapter around it;
+the UI must not calculate control values, decide transitions, parse terminal
+text, or read component internals.
+
+The current live dashboard uses this service directly. Its run-name field and
+record/stop buttons control the same recorder lifecycle as the terminal, show
+live sample and event counts, and finalize an active recording when the
+dashboard window closes.
+
+### Telemetry and event schemas
+
+Snapshot serialization uses an explicit ordered `TELEMETRY_FIELDS` schema.
+Enums become their stable string values, immutable parameter and diagnostic
+tuples become compact JSON, and optional values become empty CSV cells while
+remaining `None` in the Python API. The current telemetry schema version is
+`1.0`. Renaming, removing, or changing the meaning of a field requires a
+schema-version change; compatible field additions require deliberate review
+of the explicit header.
+
+`SimulationEvent` records authoritative simulation time, a deterministic
+sequence, category, type, severity, source, message, optional diagnostic code,
+and JSON-safe old and new values. Explicit operator actions are emitted by the
+service. A central `SimulationEventMonitor` compares consecutive snapshots to
+detect state and health transitions, light-off, protection faults, safety
+cutoff, reset results, and debounced limiter changes. Persistent conditions do
+not create an event every cycle. Recent events are held in a configurable
+bounded deque and exposed as an immutable tuple. The event schema is versioned
+independently at `1.0`.
+
+### Deterministic sampling and recorder lifecycle
+
+`RunRecorder` may receive every coordinated snapshot but samples according to
+simulation time, not wall-clock pacing. The first snapshot is written
+immediately. Later rows are written only after configurable sampling deadlines
+(0.05 s by default); deadline advancement accounts for skipped periods and a
+small numeric tolerance prevents accumulated floating-point drift. Identical
+initial state, configuration, random seed, time step, and operator sequence
+therefore produce equivalent telemetry and event CSV content.
+
+Starting a recording creates a sanitized, unique directory under the
+configurable `artifacts/runs/` base. Existing directories are never
+overwritten:
+
+```text
+artifacts/runs/2026-07-20_143505_normal_run/
+  telemetry.csv
+  events.csv
+  metadata.json
+```
+
+Metadata is written at start as incomplete and finalized at stop with sample
+and event counts. It includes all schema versions, simulation and telemetry
+timing, sensor seed, explicit component identifiers, selected configuration,
+Git commit/branch/dirty state when available, Python and platform identity,
+wall-clock recording boundaries, and completion status. Git discovery occurs
+once and fails gracefully outside a repository. Wall-clock values only name
+and identify artifacts; they never drive simulation, sampling, events, or
+control.
+
+The recorder keeps CSV files open for the session, flushes in bounded batches,
+and closes them in normal stop, context-manager cleanup, terminal quit,
+`Ctrl+C`, and application `finally` paths. Starting twice is rejected;
+stopping while inactive is safe; restarting always creates a new directory.
+Generated run directories are ignored by Git.
+
+The interactive terminal adds `record start [run_name]`, `record stop`,
+`record status`, `mark <text>`, and `runs`. Offline artifacts can be inspected
+with:
+
+```text
+python -m simulation.tools.inspect_run artifacts/runs/<run-directory>
+python -m simulation.tools.plot_run artifacts/runs/<run-directory>
+```
+
+The inspector uses only the standard library. Plotting uses the project's
+existing matplotlib dependency and reads persisted CSV after the run; it is
+never called from live integration.
+
 ## Current Limitations
 
 The simulation does not model redundant sensors, voting, analytical signal
@@ -236,3 +354,9 @@ deceleration protection are simplified signal- and command-rate constraints;
 they do not model compressor surge margin, flameout, or combustor stability.
 Overspeed protection assumes one validated speed channel and does not model
 redundant trip hardware.
+
+Run recording currently uses synchronous local CSV I/O, one process, and one
+schema family. It does not provide database indexing, networking, background
+workers, automatic requirements evaluation, cross-version migration, or live
+comparison of loaded historical runs. Wall-clock and Git metadata are
+identification aids rather than deterministic comparison fields.

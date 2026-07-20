@@ -1,6 +1,6 @@
 """Composition of engine operation, control, protection, and dynamics."""
 
-from dataclasses import dataclass
+from collections.abc import Iterable
 
 from simulation.application.event_log import InMemoryEventLog
 from simulation.application.sensor_fault_response import (
@@ -35,7 +35,6 @@ from simulation.protection.protection_manager import ProtectionManager
 from simulation.protection.types import (
     ProtectionContext,
     ProtectionDiagnosticReason,
-    ProtectionLimiter,
     ProtectionResult,
 )
 from simulation.sensors.sensor_model import (
@@ -46,6 +45,19 @@ from simulation.sensors.fault_injection import (
     SensorChannel,
     SensorFaultDefinition,
     SensorFaultInjector,
+    sensor_fault_parameters,
+    sensor_fault_type,
+)
+from simulation.telemetry.snapshot import (
+    TELEMETRY_SCHEMA_VERSION,
+    SimulationSnapshot,
+)
+from simulation.telemetry.interfaces import SnapshotSink
+from simulation.telemetry.events import (
+    EventCategory,
+    EventSeverity,
+    EventType,
+    SimulationEventMonitor,
 )
 from simulation.validation.sensor_validation import (
     ChannelDiagnosticReason,
@@ -56,63 +68,8 @@ from simulation.validation.sensor_validation import (
 )
 
 
-@dataclass(frozen=True)
-class EngineSimulationSnapshot:
-    """Observable state of one coordinated simulation step."""
-
-    simulation_time_s: float
-    previous_operating_state: EngineOperatingState
-    operating_state: EngineOperatingState
-    throttle_command: float
-    speed_setpoint_rpm: float
-    rotor_speed_rpm: float
-    measured_rotor_speed_rpm: float | None
-    validated_rotor_speed_rpm: float | None
-    rotor_speed_measurement_error_rpm: float | None
-    rotor_speed_health: ChannelHealth
-    rotor_speed_diagnostic_reason: ChannelDiagnosticReason
-    rotor_speed_value_is_held: bool
-    rotor_speed_fault: str
-    exhaust_temperature_c: float
-    measured_exhaust_temperature_c: float | None
-    validated_exhaust_temperature_c: float | None
-    exhaust_temperature_measurement_error_c: float | None
-    exhaust_temperature_health: ChannelHealth
-    exhaust_temperature_diagnostic_reason: ChannelDiagnosticReason
-    exhaust_temperature_value_is_held: bool
-    exhaust_temperature_fault: str
-    aggregate_sensor_health: ChannelHealth
-    rotor_speed_sensor_sample_period_s: float
-    exhaust_temperature_sensor_sample_period_s: float
-    requested_fuel_command: float
-    allowed_fuel_command: float
-    egt_fuel_limit: float
-    acceleration_fuel_limit: float
-    overspeed_fuel_limit: float
-    deceleration_minimum_fuel_command: float
-    state_maximum_fuel_command: float
-    active_protection_limiter: ProtectionLimiter
-    constraining_protection_limiters: tuple[ProtectionLimiter, ...]
-    protection_diagnostic_reasons: tuple[ProtectionDiagnosticReason, ...]
-    rotor_acceleration_rpm_per_s: float | None
-    rotor_deceleration_rpm_per_s: float | None
-    speed_ratio: float | None
-    soft_overspeed_active: bool
-    hard_overspeed_active: bool
-    protection_hard_cutoff_active: bool
-    critical_protection_fault_request: bool
-    protection_arbitration_conflict: bool
-    estimated_thrust_n: float
-    estimated_fuel_flow_ml_min: float
-    starter_commanded: bool
-    ignition_commanded: bool
-    speed_control_enabled: bool
-    fuel_enabled: bool
-    shutdown_fuel_cutoff_active: bool
-    egt_limiter_active: bool
-    automatic_sensor_fault_request_active: bool
-    sensor_fault_response_reason: SensorFaultResponseReason
-    fuel_cutoff_due_to_sensor_invalidity: bool
+EngineSimulationSnapshot = SimulationSnapshot
+"""Compatibility alias for the canonical telemetry-owned snapshot type."""
 
 
 class EngineSimulationCoordinator:
@@ -130,6 +87,7 @@ class EngineSimulationCoordinator:
         sensor_validator: SensorSignalValidator | None = None,
         sensor_fault_response_policy: SensorFaultResponsePolicy | None = None,
         event_log: InMemoryEventLog | None = None,
+        snapshot_sinks: Iterable[SnapshotSink] = (),
         ambient_conditions: AmbientConditions | None = None,
     ) -> None:
         self.engine_model = engine_model or FirstOrderEngineModel()
@@ -163,38 +121,40 @@ class EngineSimulationCoordinator:
             sensor_fault_response_policy or SensorFaultResponsePolicy()
         )
         self.event_log = event_log or InMemoryEventLog()
+        self._snapshot_sinks = list(snapshot_sinks)
         self.ambient_conditions = ambient_conditions or AmbientConditions()
 
         self._simulation_time_s = 0.0
+        self._step_index = 0
+        self._snapshot_sequence_number = 0
+        self._state_duration_s = 0.0
+        self._previous_throttle_demand = 0.0
         self._speed_control_was_enabled = False
-        self._automatic_fault_was_active = False
         self._last_nominal_sensor_data: SensorData | None = None
         self._snapshot = self._initial_snapshot()
-        self._reported_active_protection_limiter = (
-            self._snapshot.active_protection_limiter
+        self.event_monitor = SimulationEventMonitor(
+            self.event_log,
+            initial_snapshot=self._snapshot,
         )
-        self._pending_active_protection_limiter = (
-            self._snapshot.active_protection_limiter
-        )
-        self._pending_active_limiter_since_s = 0.0
-        self._reported_limiter_activity = {
-            ProtectionLimiter.ACCELERATION: False,
-            ProtectionLimiter.DECELERATION: False,
-        }
-        self._pending_limiter_activity = dict(
-            self._reported_limiter_activity
-        )
-        self._pending_limiter_activity_since_s = {
-            limiter: 0.0 for limiter in self._reported_limiter_activity
-        }
-        self._arbitration_conflict_was_reported = False
-        self._arbitration_conflict_clear_since_s: float | None = None
 
     @property
     def snapshot(self) -> EngineSimulationSnapshot:
         """Return the latest coordinated simulation snapshot."""
 
         return self._snapshot
+
+    def add_snapshot_sink(self, sink: SnapshotSink) -> None:
+        """Register one synchronous read-only snapshot consumer."""
+
+        if all(existing is not sink for existing in self._snapshot_sinks):
+            self._snapshot_sinks.append(sink)
+
+    def remove_snapshot_sink(self, sink: SnapshotSink) -> None:
+        """Remove one previously registered snapshot consumer."""
+
+        self._snapshot_sinks = [
+            existing for existing in self._snapshot_sinks if existing is not sink
+        ]
 
     def inject_sensor_fault(
         self,
@@ -215,10 +175,16 @@ class EngineSimulationCoordinator:
             fault=fault,
             current_measurement=current_measurement,
         )
-        self.event_log.record(
+        description = self.sensor_fault_injector.describe(channel)
+        self.event_log.emit(
             self._simulation_time_s,
-            f"Injected {channel.value} sensor fault: "
-            f"{self.sensor_fault_injector.describe(channel)}",
+            EventCategory.SENSOR_FAULT,
+            EventType.SENSOR_FAULT_INJECTED,
+            EventSeverity.WARNING,
+            "sensor_fault_injector",
+            f"Injected {channel.value} sensor fault: {description}",
+            new_value=description,
+            diagnostic_code=sensor_fault_type(fault),
         )
 
     def clear_sensor_fault(self, channel: SensorChannel) -> None:
@@ -226,10 +192,17 @@ class EngineSimulationCoordinator:
 
         if not self.sensor_fault_injector.is_active(channel):
             return
+        previous_description = self.sensor_fault_injector.describe(channel)
         self.sensor_fault_injector.clear(channel)
-        self.event_log.record(
+        self.event_log.emit(
             self._simulation_time_s,
+            EventCategory.SENSOR_FAULT,
+            EventType.SENSOR_FAULT_CLEARED,
+            EventSeverity.INFO,
+            "sensor_fault_injector",
             f"Cleared {channel.value} sensor fault",
+            old_value=previous_description,
+            new_value="none",
         )
 
     def clear_sensor_faults(self) -> None:
@@ -237,6 +210,11 @@ class EngineSimulationCoordinator:
 
         for channel in SensorChannel:
             self.clear_sensor_fault(channel)
+
+    def describe_sensor_fault(self, channel: SensorChannel) -> str:
+        """Return the stable public description of one injected fault."""
+
+        return self.sensor_fault_injector.describe(channel)
 
     def _validation_context(
         self,
@@ -359,28 +337,62 @@ class EngineSimulationCoordinator:
             time_step_s=time_step_s,
         )
         self._simulation_time_s += time_step_s
+        self._step_index += 1
+        self._snapshot_sequence_number += 1
+        if operating_command.state is previous_operating_state:
+            self._state_duration_s += time_step_s
+        else:
+            self._state_duration_s = 0.0
         self._speed_control_was_enabled = operating_command.speed_control_enabled
-        self._record_sensor_events(
-            validation_result=validation_result,
-            sensor_fault_response=sensor_fault_response,
-            protection_result=protection_result,
-        )
-
         egt_limiter_active = (
             ProtectionDiagnosticReason.EGT_LIMITING
             in protection_result.diagnostic_reasons
         )
-        self._snapshot = EngineSimulationSnapshot(
+        speed_setpoint_rpm = self._speed_setpoint_rpm(operating_command)
+        validated_speed_rpm = validation_result.sensor_data.rotor_speed_rpm
+        throttle_demand = self._clamp(request.throttle_command, 0.0, 1.0)
+        latest_operator_command = self._latest_operator_command(
+            request,
+            throttle_demand,
+        )
+        self._snapshot = SimulationSnapshot(
+            telemetry_schema_version=TELEMETRY_SCHEMA_VERSION,
             simulation_time_s=self._simulation_time_s,
+            step_index=self._step_index,
+            time_step_s=time_step_s,
+            snapshot_sequence_number=self._snapshot_sequence_number,
+            startup_requested=request.startup_requested,
+            shutdown_requested=request.shutdown_requested,
+            reset_requested=request.reset_requested,
+            fault_requested=request.fault_requested,
+            throttle_demand=throttle_demand,
+            latest_operator_command=latest_operator_command,
             previous_operating_state=previous_operating_state,
             operating_state=operating_command.state,
+            state_duration_s=self._state_duration_s,
+            starter_commanded=allowed_command.starter_commanded,
+            ignition_commanded=allowed_command.ignition_commanded,
+            speed_control_enabled=operating_command.speed_control_enabled,
+            fuel_enabled=allowed_command.fuel_enabled,
             throttle_command=operating_command.effective_throttle_command,
-            speed_setpoint_rpm=self._speed_setpoint_rpm(operating_command),
-            rotor_speed_rpm=self.engine_model.state.rotor_speed_rpm,
-            measured_rotor_speed_rpm=raw_sensor_data.rotor_speed_rpm,
-            validated_rotor_speed_rpm=(
-                validation_result.sensor_data.rotor_speed_rpm
+            speed_setpoint_rpm=speed_setpoint_rpm,
+            speed_error_rpm=(
+                speed_setpoint_rpm - validated_speed_rpm
+                if operating_command.speed_control_enabled
+                and validated_speed_rpm is not None
+                else None
             ),
+            requested_fuel_command=requested_command.fuel_command,
+            rotor_speed_rpm=self.engine_model.state.rotor_speed_rpm,
+            exhaust_temperature_c=(
+                self.engine_model.state.exhaust_temperature_c
+            ),
+            estimated_thrust_n=engine_outputs.estimated_thrust_n,
+            estimated_fuel_flow_ml_min=(
+                engine_outputs.estimated_fuel_flow_ml_min
+            ),
+            measured_rotor_speed_rpm=raw_sensor_data.rotor_speed_rpm,
+            validated_rotor_speed_rpm=validated_speed_rpm,
             rotor_speed_measurement_error_rpm=self._measurement_error(
                 raw_sensor_data.rotor_speed_rpm,
                 self.engine_model.state.rotor_speed_rpm,
@@ -395,8 +407,15 @@ class EngineSimulationCoordinator:
             rotor_speed_fault=self.sensor_fault_injector.describe(
                 SensorChannel.ROTOR_SPEED
             ),
-            exhaust_temperature_c=(
-                self.engine_model.state.exhaust_temperature_c
+            rotor_speed_fault_type=sensor_fault_type(
+                self.sensor_fault_injector.active_fault(
+                    SensorChannel.ROTOR_SPEED
+                )
+            ),
+            rotor_speed_fault_parameters=sensor_fault_parameters(
+                self.sensor_fault_injector.active_fault(
+                    SensorChannel.ROTOR_SPEED
+                )
             ),
             measured_exhaust_temperature_c=(
                 raw_sensor_data.exhaust_temperature_c
@@ -420,6 +439,16 @@ class EngineSimulationCoordinator:
             exhaust_temperature_fault=self.sensor_fault_injector.describe(
                 SensorChannel.EXHAUST_TEMPERATURE
             ),
+            exhaust_temperature_fault_type=sensor_fault_type(
+                self.sensor_fault_injector.active_fault(
+                    SensorChannel.EXHAUST_TEMPERATURE
+                )
+            ),
+            exhaust_temperature_fault_parameters=sensor_fault_parameters(
+                self.sensor_fault_injector.active_fault(
+                    SensorChannel.EXHAUST_TEMPERATURE
+                )
+            ),
             aggregate_sensor_health=validation_result.aggregate_health,
             rotor_speed_sensor_sample_period_s=(
                 self.sensor_model.rotor_speed_sample_period_s
@@ -427,9 +456,14 @@ class EngineSimulationCoordinator:
             exhaust_temperature_sensor_sample_period_s=(
                 self.sensor_model.exhaust_temperature_sample_period_s
             ),
-            requested_fuel_command=requested_command.fuel_command,
             allowed_fuel_command=allowed_command.fuel_command,
             egt_fuel_limit=protection_result.egt_fuel_limit,
+            egt_intervention_temperature_c=(
+                self.egt_limiter.parameters.intervention_exhaust_temperature_c
+            ),
+            egt_maximum_temperature_c=(
+                self.egt_limiter.parameters.maximum_exhaust_temperature_c
+            ),
             acceleration_fuel_limit=(
                 protection_result.acceleration_fuel_limit
             ),
@@ -469,14 +503,6 @@ class EngineSimulationCoordinator:
             protection_arbitration_conflict=(
                 protection_result.arbitration_conflict
             ),
-            estimated_thrust_n=engine_outputs.estimated_thrust_n,
-            estimated_fuel_flow_ml_min=(
-                engine_outputs.estimated_fuel_flow_ml_min
-            ),
-            starter_commanded=allowed_command.starter_commanded,
-            ignition_commanded=allowed_command.ignition_commanded,
-            speed_control_enabled=operating_command.speed_control_enabled,
-            fuel_enabled=allowed_command.fuel_enabled,
             shutdown_fuel_cutoff_active=(
                 operating_command.shutdown_fuel_cutoff_active
             ),
@@ -484,11 +510,15 @@ class EngineSimulationCoordinator:
             automatic_sensor_fault_request_active=(
                 sensor_fault_response.automatic_fault_requested
             ),
-            sensor_fault_response_reason=sensor_fault_response.reason,
+            sensor_fault_response_reason=sensor_fault_response.reason.value,
             fuel_cutoff_due_to_sensor_invalidity=(
                 sensor_fault_response.fuel_cutoff_required
             ),
         )
+        self._previous_throttle_demand = throttle_demand
+        self.event_monitor.observe(self._snapshot)
+        for sink in tuple(self._snapshot_sinks):
+            sink.publish(self._snapshot)
         return self._snapshot
 
     def _requested_actuator_command(
@@ -569,182 +599,6 @@ class EngineSimulationCoordinator:
             exhaust_temperature_c=sensor_data.exhaust_temperature_c,
         )
 
-    def _record_sensor_events(
-        self,
-        validation_result: SensorValidationResult,
-        sensor_fault_response: SensorFaultResponse,
-        protection_result: ProtectionResult,
-    ) -> None:
-        """Record sensor and protection transitions without repeated events."""
-
-        channel_results = (
-            (
-                "Rotor-speed",
-                self._snapshot.rotor_speed_health,
-                validation_result.rotor_speed.health,
-            ),
-            (
-                "EGT",
-                self._snapshot.exhaust_temperature_health,
-                validation_result.exhaust_temperature.health,
-            ),
-        )
-        for channel_name, previous_health, current_health in channel_results:
-            if previous_health is not current_health:
-                self.event_log.record(
-                    self._simulation_time_s,
-                    f"{channel_name} channel {previous_health.value} -> "
-                    f"{current_health.value}",
-                )
-
-        automatic_fault_active = (
-            sensor_fault_response.automatic_fault_requested
-        )
-        if automatic_fault_active and not self._automatic_fault_was_active:
-            self.event_log.record(
-                self._simulation_time_s,
-                "Automatic FAULT request: "
-                f"{sensor_fault_response.reason.value}",
-            )
-            self.event_log.record(
-                self._simulation_time_s,
-                "Fuel cut off due to sensor invalidity",
-            )
-        self._automatic_fault_was_active = automatic_fault_active
-        self._record_protection_events(protection_result)
-
-    def _record_protection_events(
-        self,
-        protection_result: ProtectionResult,
-    ) -> None:
-        """Record protection activation, release, conflict, and critical edges."""
-
-        self._record_debounced_active_limiter(protection_result.active_limiter)
-        limiter_activity = {
-            ProtectionLimiter.ACCELERATION: (
-                ProtectionDiagnosticReason.ACCELERATION_LIMITING
-                in protection_result.diagnostic_reasons
-            ),
-            ProtectionLimiter.DECELERATION: (
-                ProtectionDiagnosticReason.DECELERATION_LIMITING
-                in protection_result.diagnostic_reasons
-            ),
-        }
-        for limiter, active in limiter_activity.items():
-            self._record_debounced_limiter_activity(limiter, active)
-
-        if (
-            protection_result.soft_overspeed_active
-            and not self._snapshot.soft_overspeed_active
-        ):
-            self.event_log.record(
-                self._simulation_time_s,
-                "Soft overspeed intervention activated",
-            )
-        if (
-            protection_result.hard_overspeed_active
-            and not self._snapshot.hard_overspeed_active
-        ):
-            self.event_log.record(
-                self._simulation_time_s,
-                "Hard overspeed fuel cutoff",
-            )
-        self._record_arbitration_conflict(protection_result)
-        if (
-            protection_result.critical_protection_fault_request
-            and not self._snapshot.critical_protection_fault_request
-        ):
-            self.event_log.record(
-                self._simulation_time_s,
-                "Critical protection FAULT request",
-            )
-
-    def _record_debounced_active_limiter(
-        self,
-        current_limiter: ProtectionLimiter,
-    ) -> None:
-        """Report primary-authority changes only after a stable short dwell."""
-
-        if current_limiter is not self._pending_active_protection_limiter:
-            self._pending_active_protection_limiter = current_limiter
-            self._pending_active_limiter_since_s = self._simulation_time_s
-            return
-        if (
-            current_limiter is self._reported_active_protection_limiter
-            or self._simulation_time_s
-            - self._pending_active_limiter_since_s
-            < 0.05
-        ):
-            return
-
-        previous_limiter = self._reported_active_protection_limiter
-        self.event_log.record(
-            self._simulation_time_s,
-            f"Active fuel limiter {previous_limiter.value} -> "
-            f"{current_limiter.value}",
-        )
-        self._reported_active_protection_limiter = current_limiter
-
-    def _record_debounced_limiter_activity(
-        self,
-        limiter: ProtectionLimiter,
-        active: bool,
-    ) -> None:
-        """Report sustained acceleration and deceleration limiter edges."""
-
-        if active is not self._pending_limiter_activity[limiter]:
-            self._pending_limiter_activity[limiter] = active
-            self._pending_limiter_activity_since_s[limiter] = (
-                self._simulation_time_s
-            )
-            return
-        if (
-            active is self._reported_limiter_activity[limiter]
-            or self._simulation_time_s
-            - self._pending_limiter_activity_since_s[limiter]
-            < 0.05
-        ):
-            return
-
-        label = (
-            "Acceleration limiter"
-            if limiter is ProtectionLimiter.ACCELERATION
-            else "Deceleration limiter"
-        )
-        self.event_log.record(
-            self._simulation_time_s,
-            f"{label} {'activated' if active else 'released'}",
-        )
-        self._reported_limiter_activity[limiter] = active
-
-    def _record_arbitration_conflict(
-        self,
-        protection_result: ProtectionResult,
-    ) -> None:
-        """Report a conflict once until normal arbitration is stable again."""
-
-        if protection_result.arbitration_conflict:
-            self._arbitration_conflict_clear_since_s = None
-            if not self._arbitration_conflict_was_reported:
-                self.event_log.record(
-                    self._simulation_time_s,
-                    "Fuel arbitration conflict; safety upper limit selected",
-                )
-                self._arbitration_conflict_was_reported = True
-            return
-
-        if not self._arbitration_conflict_was_reported:
-            return
-        if self._arbitration_conflict_clear_since_s is None:
-            self._arbitration_conflict_clear_since_s = self._simulation_time_s
-        elif (
-            self._simulation_time_s
-            - self._arbitration_conflict_clear_since_s
-            >= 1.0
-        ):
-            self._arbitration_conflict_was_reported = False
-            self._arbitration_conflict_clear_since_s = None
-
     @staticmethod
     def _measurement_error(
         measured_value: float | None,
@@ -769,17 +623,61 @@ class EngineSimulationCoordinator:
             operating_command.effective_throttle_command
         )
 
+    def _latest_operator_command(
+        self,
+        request: EngineOperationRequest,
+        throttle_demand: float,
+    ) -> str:
+        """Return a stable description of meaningful input on this step."""
+
+        commands: list[str] = []
+        if request.startup_requested:
+            commands.append("start")
+        if request.shutdown_requested:
+            commands.append("shutdown")
+        if request.fault_requested:
+            commands.append("fault")
+        if request.reset_requested:
+            commands.append("reset")
+        if abs(throttle_demand - self._previous_throttle_demand) > 1.0e-12:
+            commands.append("throttle")
+        return ",".join(commands) or "none"
+
+    @staticmethod
+    def _clamp(value: float, minimum: float, maximum: float) -> float:
+        return max(minimum, min(value, maximum))
+
     def _initial_snapshot(self) -> EngineSimulationSnapshot:
         """Create the safe initial OFF-state snapshot."""
 
         protection_result = self.protection_manager.last_result
-        return EngineSimulationSnapshot(
+        return SimulationSnapshot(
+            telemetry_schema_version=TELEMETRY_SCHEMA_VERSION,
             simulation_time_s=0.0,
+            step_index=0,
+            time_step_s=0.0,
+            snapshot_sequence_number=0,
+            startup_requested=False,
+            shutdown_requested=False,
+            reset_requested=False,
+            fault_requested=False,
+            throttle_demand=0.0,
+            latest_operator_command="none",
             previous_operating_state=EngineOperatingState.OFF,
             operating_state=EngineOperatingState.OFF,
+            state_duration_s=0.0,
+            starter_commanded=False,
+            ignition_commanded=False,
+            speed_control_enabled=False,
+            fuel_enabled=False,
             throttle_command=0.0,
             speed_setpoint_rpm=0.0,
+            speed_error_rpm=None,
+            requested_fuel_command=0.0,
             rotor_speed_rpm=self.engine_model.state.rotor_speed_rpm,
+            exhaust_temperature_c=self.engine_model.state.exhaust_temperature_c,
+            estimated_thrust_n=0.0,
+            estimated_fuel_flow_ml_min=0.0,
             measured_rotor_speed_rpm=self.engine_model.state.rotor_speed_rpm,
             validated_rotor_speed_rpm=self.engine_model.state.rotor_speed_rpm,
             rotor_speed_measurement_error_rpm=0.0,
@@ -787,7 +685,8 @@ class EngineSimulationCoordinator:
             rotor_speed_diagnostic_reason=ChannelDiagnosticReason.NONE,
             rotor_speed_value_is_held=False,
             rotor_speed_fault="none",
-            exhaust_temperature_c=self.engine_model.state.exhaust_temperature_c,
+            rotor_speed_fault_type="none",
+            rotor_speed_fault_parameters=(),
             measured_exhaust_temperature_c=(
                 self.engine_model.state.exhaust_temperature_c
             ),
@@ -801,6 +700,8 @@ class EngineSimulationCoordinator:
             ),
             exhaust_temperature_value_is_held=False,
             exhaust_temperature_fault="none",
+            exhaust_temperature_fault_type="none",
+            exhaust_temperature_fault_parameters=(),
             aggregate_sensor_health=ChannelHealth.VALID,
             rotor_speed_sensor_sample_period_s=(
                 self.sensor_model.rotor_speed_sample_period_s
@@ -808,9 +709,14 @@ class EngineSimulationCoordinator:
             exhaust_temperature_sensor_sample_period_s=(
                 self.sensor_model.exhaust_temperature_sample_period_s
             ),
-            requested_fuel_command=0.0,
             allowed_fuel_command=0.0,
             egt_fuel_limit=protection_result.egt_fuel_limit,
+            egt_intervention_temperature_c=(
+                self.egt_limiter.parameters.intervention_exhaust_temperature_c
+            ),
+            egt_maximum_temperature_c=(
+                self.egt_limiter.parameters.maximum_exhaust_temperature_c
+            ),
             acceleration_fuel_limit=(
                 protection_result.acceleration_fuel_limit
             ),
@@ -850,15 +756,9 @@ class EngineSimulationCoordinator:
             protection_arbitration_conflict=(
                 protection_result.arbitration_conflict
             ),
-            estimated_thrust_n=0.0,
-            estimated_fuel_flow_ml_min=0.0,
-            starter_commanded=False,
-            ignition_commanded=False,
-            speed_control_enabled=False,
-            fuel_enabled=False,
             shutdown_fuel_cutoff_active=False,
             egt_limiter_active=False,
             automatic_sensor_fault_request_active=False,
-            sensor_fault_response_reason=SensorFaultResponseReason.NONE,
+            sensor_fault_response_reason=SensorFaultResponseReason.NONE.value,
             fuel_cutoff_due_to_sensor_invalidity=False,
         )

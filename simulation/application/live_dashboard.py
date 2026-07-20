@@ -51,7 +51,7 @@ class LiveEngineDashboard:
         self.result_path = Path(result_path)
 
         self._closed = False
-        self._displayed_event_count = 0
+        self._last_displayed_event_sequence = 0
         self._last_update_time = time.monotonic()
         self._figure, self._plot_axes = self._create_figure()
         self._create_status_panel()
@@ -64,7 +64,9 @@ class LiveEngineDashboard:
         )
         self._timer.add_callback(self._on_timer)
         self._figure.canvas.mpl_connect("close_event", self._on_figure_close)
-        self._refresh_dashboard(self.dashboard_simulation.coordinator.snapshot)
+        self._refresh_dashboard(
+            self.dashboard_simulation.service.get_latest_snapshot()
+        )
 
     @property
     def figure(self) -> plt.Figure:
@@ -100,6 +102,7 @@ class LiveEngineDashboard:
 
         if self._closed:
             return
+        self._finalize_dashboard_recording()
         if save_result:
             self.save_figure()
         self._closed = True
@@ -256,37 +259,78 @@ class LiveEngineDashboard:
             color=self._ACCENT_COLOR,
         )
 
-        self._add_panel((0.018, 0.035, 0.345, 0.165), "ENGINE COMMANDS")
+        self._add_panel((0.018, 0.025, 0.345, 0.175), "ENGINE COMMANDS")
 
         self._start_button = self._create_button(
-            bounds=(0.032, 0.125, 0.095, 0.04),
+            bounds=(0.032, 0.125, 0.068, 0.035),
             label="START",
             color="#176c54",
             callback=self._on_start,
         )
         self._shutdown_button = self._create_button(
-            bounds=(0.137, 0.125, 0.105, 0.04),
+            bounds=(0.108, 0.125, 0.082, 0.035),
             label="SHUTDOWN",
             color="#72561d",
             callback=self._on_shutdown,
         )
         self._fault_button = self._create_button(
-            bounds=(0.252, 0.125, 0.097, 0.04),
+            bounds=(0.198, 0.125, 0.068, 0.035),
             label="FAULT",
             color="#762f3a",
             callback=self._on_fault,
         )
         self._reset_button = self._create_button(
-            bounds=(0.032, 0.070, 0.095, 0.04),
+            bounds=(0.274, 0.125, 0.075, 0.035),
             label="RESET",
             color="#234e70",
             callback=self._on_reset,
         )
+        self._create_recording_controls()
         self._quit_button = self._create_button(
-            bounds=(0.137, 0.070, 0.212, 0.04),
+            bounds=(0.244, 0.035, 0.105, 0.035),
             label="SAVE & QUIT",
             color="#263950",
             callback=self._on_quit,
+        )
+
+    def _create_recording_controls(self) -> None:
+        """Create dashboard-native run recording controls and status."""
+
+        run_name_axis = self._figure.add_axes((0.072, 0.080, 0.165, 0.032))
+        self._style_widget_axis(run_name_axis)
+        self._recording_run_name_text_box = TextBox(
+            run_name_axis,
+            "RUN  ",
+            initial="dashboard_run",
+            color=self._PLOT_COLOR,
+            hovercolor="#15263d",
+        )
+        self._recording_run_name_text_box.label.set_color(
+            self._MUTED_TEXT_COLOR
+        )
+        self._recording_run_name_text_box.label.set_fontsize(7)
+        self._recording_run_name_text_box.text_disp.set_color(self._TEXT_COLOR)
+
+        self._recording_status_text = self._figure.text(
+            0.247,
+            0.089,
+            "REC OFF",
+            fontsize=7,
+            fontweight="bold",
+            family="monospace",
+            color=self._MUTED_TEXT_COLOR,
+        )
+        self._recording_start_button = self._create_button(
+            bounds=(0.032, 0.035, 0.095, 0.035),
+            label="● RECORD",
+            color="#8a3041",
+            callback=self._on_start_recording,
+        )
+        self._recording_stop_button = self._create_button(
+            bounds=(0.137, 0.035, 0.097, 0.035),
+            label="■ STOP REC",
+            color="#263950",
+            callback=self._on_stop_recording,
         )
 
     def _create_throttle_lever(self, axis: Axes) -> None:
@@ -601,15 +645,16 @@ class LiveEngineDashboard:
             linewidth=2.0,
             label="Validated",
         )
+        snapshot = self.dashboard_simulation.service.get_latest_snapshot()
         egt_axis.axhline(
-            self.dashboard_simulation.coordinator.egt_limiter.parameters.intervention_exhaust_temperature_c,
+            snapshot.egt_intervention_temperature_c,
             color=self._WARNING_COLOR,
             linestyle="--",
             linewidth=1.2,
             label="Intervention",
         )
         egt_axis.axhline(
-            self.dashboard_simulation.coordinator.egt_limiter.parameters.maximum_exhaust_temperature_c,
+            snapshot.egt_maximum_temperature_c,
             color=self._DANGER_COLOR,
             linestyle="--",
             linewidth=1.2,
@@ -776,6 +821,7 @@ class LiveEngineDashboard:
             axis.set_xlim(window_start_s, window_end_s)
 
         self._update_status(snapshot)
+        self._update_recording_status()
         self._figure.canvas.draw_idle()
 
     def _update_status(self, snapshot: EngineSimulationSnapshot) -> None:
@@ -828,15 +874,19 @@ class LiveEngineDashboard:
             )
             self._transition_text.set_color(self._ACCENT_COLOR)
 
-        events = self.dashboard_simulation.coordinator.event_log.events
-        if len(events) > self._displayed_event_count:
+        events = self.dashboard_simulation.service.get_recent_events()
+        if (
+            events
+            and events[-1].event_sequence
+            > self._last_displayed_event_sequence
+        ):
             latest_event = events[-1]
             self._transition_text.set_text(
                 f"●  {latest_event.simulation_time_s:6.2f} s  /  "
                 f"{latest_event.message}"
             )
             self._transition_text.set_color(self._WARNING_COLOR)
-            self._displayed_event_count = len(events)
+            self._last_displayed_event_sequence = latest_event.event_sequence
 
     def _on_throttle_changed(self, throttle_command: float) -> None:
         """Apply a persistent throttle demand from the slider."""
@@ -890,7 +940,7 @@ class LiveEngineDashboard:
         fault_controls.set_value_text(self._fault_value_text_box.text)
         try:
             message = fault_controls.inject(
-                self.dashboard_simulation.coordinator
+                self.dashboard_simulation.service
             )
         except ValueError as error:
             self._set_fault_feedback(
@@ -904,7 +954,7 @@ class LiveEngineDashboard:
         """Clear the selected channel and expose validator recovery."""
 
         message = self.dashboard_simulation.sensor_fault_controls.clear_selected(
-            self.dashboard_simulation.coordinator
+            self.dashboard_simulation.service
         )
         self._set_fault_feedback(message, self._ACCENT_COLOR)
 
@@ -912,7 +962,7 @@ class LiveEngineDashboard:
         """Clear all channel faults and expose validator recovery."""
 
         message = self.dashboard_simulation.sensor_fault_controls.clear_all(
-            self.dashboard_simulation.coordinator
+            self.dashboard_simulation.service
         )
         self._set_fault_feedback(message, self._ACCENT_COLOR)
 
@@ -943,6 +993,93 @@ class LiveEngineDashboard:
 
         self.dashboard_simulation.controls.request_reset()
 
+    def _on_start_recording(self, _event: object) -> None:
+        """Start recording using the run name entered in the dashboard."""
+
+        run_name = self._recording_run_name_text_box.text.strip() or None
+        try:
+            run_directory = self.dashboard_simulation.service.start_recording(
+                run_name
+            )
+        except (OSError, RuntimeError) as error:
+            self._set_recording_feedback(
+                f"Recording error: {error}",
+                self._DANGER_COLOR,
+            )
+            return
+        self._set_recording_feedback(
+            f"Recording started  /  {run_directory.name}",
+            self._DANGER_COLOR,
+        )
+        self._update_recording_status()
+
+    def _on_stop_recording(self, _event: object) -> None:
+        """Finalize the active dashboard recording safely."""
+
+        try:
+            summary = self.dashboard_simulation.service.stop_recording()
+        except OSError as error:
+            self._set_recording_feedback(
+                f"Recording stop error: {error}",
+                self._DANGER_COLOR,
+            )
+            return
+        if summary is None:
+            self._set_recording_feedback(
+                "No recording is active",
+                self._MUTED_TEXT_COLOR,
+            )
+        else:
+            self._set_recording_feedback(
+                "Recording saved  /  "
+                f"{summary.telemetry_sample_count} samples  /  "
+                f"{summary.event_count} events",
+                self._SUCCESS_COLOR,
+            )
+        self._update_recording_status()
+
+    def _update_recording_status(self) -> None:
+        """Refresh recording activity and persisted row counters."""
+
+        service = self.dashboard_simulation.service
+        status = service.get_recording_status()
+        if status is None:
+            status_text = "REC OFF"
+            status_color = self._MUTED_TEXT_COLOR
+        elif service.recorder.is_recording:
+            status_text = (
+                f"● REC {status.telemetry_sample_count}S/"
+                f"{status.event_count}E"
+            )
+            status_color = self._DANGER_COLOR
+        else:
+            status_text = (
+                f"SAVED {status.telemetry_sample_count}S/"
+                f"{status.event_count}E"
+            )
+            status_color = self._SUCCESS_COLOR
+        self._recording_status_text.set_text(status_text)
+        self._recording_status_text.set_color(status_color)
+
+    def _set_recording_feedback(self, message: str, color: str) -> None:
+        """Show immediate recording feedback in the system event field."""
+
+        self._transition_text.set_text(f"●  {message}")
+        self._transition_text.set_color(color)
+        self._figure.canvas.draw_idle()
+
+    def _finalize_dashboard_recording(self) -> None:
+        """Close an active recording when the dashboard itself closes."""
+
+        try:
+            self.dashboard_simulation.service.close(completed=True)
+        except OSError as error:
+            self._set_recording_feedback(
+                f"Recording cleanup error: {error}",
+                self._DANGER_COLOR,
+            )
+        self._update_recording_status()
+
     def _on_quit(self, _event: object) -> None:
         """Save the final view and close the dashboard."""
 
@@ -953,6 +1090,7 @@ class LiveEngineDashboard:
 
         if self._closed:
             return
+        self._finalize_dashboard_recording()
         self.save_figure()
         self._closed = True
         self._timer.stop()

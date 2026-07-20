@@ -1,39 +1,9 @@
-"""Minimal in-memory event recording for simulation diagnostics."""
+"""Compatibility exports for the structured telemetry event log."""
 
-from dataclasses import dataclass
+from simulation.telemetry.events import SimulationEvent, SimulationEventLog
 
-
-@dataclass(frozen=True)
-class SimulationEvent:
-    """One timestamped simulation event."""
-
-    simulation_time_s: float
-    message: str
+__all__ = ["InMemoryEventLog", "SimulationEvent"]
 
 
-class InMemoryEventLog:
-    """Retain ordered events for terminal output and later logging adapters."""
-
-    def __init__(self) -> None:
-        self._events: list[SimulationEvent] = []
-
-    @property
-    def events(self) -> tuple[SimulationEvent, ...]:
-        """Return an immutable view of all recorded events."""
-
-        return tuple(self._events)
-
-    def record(self, simulation_time_s: float, message: str) -> None:
-        """Append one event."""
-
-        self._events.append(
-            SimulationEvent(
-                simulation_time_s=simulation_time_s,
-                message=message,
-            )
-        )
-
-    def reset(self) -> None:
-        """Clear all retained events."""
-
-        self._events.clear()
+class InMemoryEventLog(SimulationEventLog):
+    """Backward-compatible name for the bounded structured event log."""

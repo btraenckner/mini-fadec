@@ -1,5 +1,7 @@
 """Headless unit tests for the Matplotlib live engine dashboard."""
 
+from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 import matplotlib
@@ -9,6 +11,8 @@ from matplotlib.colors import to_rgba
 matplotlib.use("Agg")
 
 from simulation.application.live_dashboard import LiveEngineDashboard  # noqa: E402
+from simulation.application.dashboard_model import DashboardSimulation  # noqa: E402
+from simulation.application.simulation_service import SimulationService  # noqa: E402
 from simulation.operation.engine_state import EngineOperatingState  # noqa: E402
 from simulation.sensors.fault_injection import (  # noqa: E402
     BiasSensorFault,
@@ -17,6 +21,23 @@ from simulation.sensors.fault_injection import (  # noqa: E402
     SensorChannel,
 )
 from simulation.validation.sensor_validation import ChannelHealth  # noqa: E402
+from simulation.telemetry.metadata import GitMetadata  # noqa: E402
+from simulation.telemetry.recorder import (  # noqa: E402
+    RunRecorder,
+    RunRecorderParameters,
+)
+
+
+def _recording_dashboard(tmp_path: Path) -> LiveEngineDashboard:
+    recorder = RunRecorder(
+        RunRecorderParameters(base_directory=tmp_path),
+        wall_clock=lambda: datetime(2026, 7, 20, tzinfo=timezone.utc),
+        git_metadata_provider=lambda _: GitMetadata(),
+    )
+    service = SimulationService(recorder=recorder)
+    return LiveEngineDashboard(
+        dashboard_simulation=DashboardSimulation(service=service)
+    )
 
 
 def test_dashboard_advances_and_refreshes_live_signals() -> None:
@@ -238,3 +259,57 @@ def test_dashboard_reports_invalid_fault_input_without_raising(
         "Invalid fault input:"
     )
     dashboard.close(save_result=False)
+
+
+def test_dashboard_starts_and_stops_named_recording(tmp_path: Path) -> None:
+    dashboard = _recording_dashboard(tmp_path)
+    dashboard._recording_run_name_text_box.set_val("dashboard test")
+
+    dashboard._on_start_recording(None)
+    dashboard.advance_and_refresh(0.12)
+
+    service = dashboard.dashboard_simulation.service
+    active_status = service.get_recording_status()
+    assert active_status is not None
+    assert service.recorder.is_recording
+    assert active_status.run_name == "dashboard_test"
+    assert dashboard._recording_status_text.get_text().startswith("● REC")
+
+    dashboard._on_stop_recording(None)
+
+    final_status = service.get_recording_status()
+    assert final_status is not None
+    assert service.recorder.is_recording is False
+    assert final_status.telemetry_sample_count == 3
+    assert final_status.event_count == 2
+    assert dashboard._recording_status_text.get_text().startswith("SAVED")
+    assert (final_status.run_directory / "telemetry.csv").is_file()
+    assert (final_status.run_directory / "events.csv").is_file()
+    dashboard.close(save_result=False)
+
+
+def test_dashboard_reports_duplicate_recording_start_without_crashing(
+    tmp_path: Path,
+) -> None:
+    dashboard = _recording_dashboard(tmp_path)
+    dashboard._on_start_recording(None)
+
+    dashboard._on_start_recording(None)
+
+    assert "already active" in dashboard._transition_text.get_text()
+    dashboard.close(save_result=False)
+
+
+def test_dashboard_close_finalizes_active_recording(tmp_path: Path) -> None:
+    dashboard = _recording_dashboard(tmp_path)
+    dashboard._on_start_recording(None)
+    service = dashboard.dashboard_simulation.service
+    run_directory = service.recorder.current_run_directory
+    assert run_directory is not None
+
+    dashboard.close(save_result=False)
+
+    with (run_directory / "metadata.json").open(encoding="utf-8") as file:
+        metadata = json.load(file)
+    assert service.recorder.is_recording is False
+    assert metadata["completion_status"] == "complete"
