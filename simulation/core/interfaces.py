@@ -33,8 +33,16 @@ class EngineModelInterface(Protocol):
 class SensorModelInterface(Protocol):
     """Interface implemented by simulated or real sensor adapters."""
 
-    def measure(self, engine_state: EngineState) -> SensorData:
+    def measure(
+        self,
+        engine_state: EngineState,
+        time_step_s: float,
+    ) -> SensorData:
         """Convert the current engine state into controller measurements."""
+        ...
+
+    def reset(self) -> None:
+        """Reset retained measurements, sampling state, and random state."""
         ...
 
 
