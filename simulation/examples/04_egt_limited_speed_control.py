@@ -7,11 +7,17 @@ from simulation.controllers.speed_controller import (
     LinearThrottleToSpeedScheduler,
     PIEngineSpeedController,
 )
-from simulation.core.types import AmbientConditions, ControlRequest, SensorData
+from simulation.core.types import (
+    ActuatorCommand,
+    AmbientConditions,
+    ControlRequest,
+    SensorData,
+)
 from simulation.models.engine_model import FirstOrderEngineModel
 from simulation.operation.engine_state import EngineOperatingState
-from simulation.protection.exhaust_temperature_limiter import (
-    ExhaustTemperatureLimiter,
+from simulation.protection.protection_manager import ProtectionManager
+from simulation.protection.types import (
+    ProtectionContext,
 )
 from simulation.sensors.sensor_model import (
     ConfigurableSensorModel,
@@ -42,7 +48,7 @@ def main() -> None:
     engine_model = FirstOrderEngineModel.running_at_idle()
     scheduler = LinearThrottleToSpeedScheduler()
     controller = PIEngineSpeedController(scheduler=scheduler)
-    limiter = ExhaustTemperatureLimiter()
+    protection_manager = ProtectionManager()
     # Use random_seed=None to demonstrate non-reproducible measurement noise.
     sensor_model = ConfigurableSensorModel(
         configuration=SensorModelConfiguration(random_seed=0)
@@ -105,10 +111,17 @@ def main() -> None:
             sensor_data=sensor_data,
             time_step_s=time_step_s,
         )
-        protected_command = limiter.apply(
-            requested_command=requested_command,
-            sensor_data=sensor_data,
+        protection_result = protection_manager.apply(
+            requested_fuel_command=requested_command.fuel_command,
+            sensor_data=validated_data,
+            context=ProtectionContext(
+                operating_state=EngineOperatingState.RUNNING,
+                fuel_enabled=True,
+            ),
             time_step_s=time_step_s,
+        )
+        protected_command = ActuatorCommand(
+            fuel_command=protection_result.final_fuel_command
         )
         outputs = engine_model.step(
             actuator_command=protected_command,
@@ -159,13 +172,13 @@ def main() -> None:
         label="Measured EGT",
     )
     axes[3].axhline(
-        limiter.parameters.intervention_exhaust_temperature_c,
+        protection_manager.egt_limiter.parameters.intervention_exhaust_temperature_c,
         color="tab:orange",
         linestyle="--",
         label="Intervention",
     )
     axes[3].axhline(
-        limiter.parameters.maximum_exhaust_temperature_c,
+        protection_manager.egt_limiter.parameters.maximum_exhaust_temperature_c,
         color="tab:red",
         linestyle="--",
         label="Limit",

@@ -27,6 +27,17 @@ from simulation.operation.state_machine import (
 from simulation.protection.exhaust_temperature_limiter import (
     ExhaustTemperatureLimiter,
 )
+from simulation.protection.overspeed_limiter import (
+    OverspeedLimiter,
+    OverspeedLimiterParameters,
+)
+from simulation.protection.protection_manager import ProtectionManager
+from simulation.protection.types import (
+    ProtectionContext,
+    ProtectionDiagnosticReason,
+    ProtectionLimiter,
+    ProtectionResult,
+)
 from simulation.sensors.sensor_model import (
     ConfigurableSensorModel,
     SensorModelConfiguration,
@@ -75,6 +86,22 @@ class EngineSimulationSnapshot:
     exhaust_temperature_sensor_sample_period_s: float
     requested_fuel_command: float
     allowed_fuel_command: float
+    egt_fuel_limit: float
+    acceleration_fuel_limit: float
+    overspeed_fuel_limit: float
+    deceleration_minimum_fuel_command: float
+    state_maximum_fuel_command: float
+    active_protection_limiter: ProtectionLimiter
+    constraining_protection_limiters: tuple[ProtectionLimiter, ...]
+    protection_diagnostic_reasons: tuple[ProtectionDiagnosticReason, ...]
+    rotor_acceleration_rpm_per_s: float | None
+    rotor_deceleration_rpm_per_s: float | None
+    speed_ratio: float | None
+    soft_overspeed_active: bool
+    hard_overspeed_active: bool
+    protection_hard_cutoff_active: bool
+    critical_protection_fault_request: bool
+    protection_arbitration_conflict: bool
     estimated_thrust_n: float
     estimated_fuel_flow_ml_min: float
     starter_commanded: bool
@@ -97,6 +124,7 @@ class EngineSimulationCoordinator:
         state_machine: EngineStateMachine | None = None,
         speed_controller: PIEngineSpeedController | None = None,
         egt_limiter: ExhaustTemperatureLimiter | None = None,
+        protection_manager: ProtectionManager | None = None,
         sensor_model: SensorModelInterface | None = None,
         sensor_fault_injector: SensorFaultInjector | None = None,
         sensor_validator: SensorSignalValidator | None = None,
@@ -107,7 +135,22 @@ class EngineSimulationCoordinator:
         self.engine_model = engine_model or FirstOrderEngineModel()
         self.state_machine = state_machine or EngineStateMachine()
         self.speed_controller = speed_controller or PIEngineSpeedController()
-        self.egt_limiter = egt_limiter or ExhaustTemperatureLimiter()
+        if protection_manager is not None and egt_limiter is not None:
+            raise ValueError(
+                "provide either protection_manager or egt_limiter, not both"
+            )
+        self.protection_manager = protection_manager or ProtectionManager(
+            egt_limiter=egt_limiter or ExhaustTemperatureLimiter(),
+            overspeed_limiter=OverspeedLimiter(
+                parameters=OverspeedLimiterParameters(
+                    maximum_normal_speed_rpm=(
+                        self.speed_controller.scheduler.maximum_speed_rpm
+                    )
+                )
+            ),
+        )
+        # Compatibility alias for callers that inspect EGT thresholds.
+        self.egt_limiter = self.protection_manager.egt_limiter
         # Set random_seed=None for non-reproducible demonstration noise.
         self.sensor_model = sensor_model or ConfigurableSensorModel(
             configuration=SensorModelConfiguration(random_seed=0)
@@ -127,6 +170,25 @@ class EngineSimulationCoordinator:
         self._automatic_fault_was_active = False
         self._last_nominal_sensor_data: SensorData | None = None
         self._snapshot = self._initial_snapshot()
+        self._reported_active_protection_limiter = (
+            self._snapshot.active_protection_limiter
+        )
+        self._pending_active_protection_limiter = (
+            self._snapshot.active_protection_limiter
+        )
+        self._pending_active_limiter_since_s = 0.0
+        self._reported_limiter_activity = {
+            ProtectionLimiter.ACCELERATION: False,
+            ProtectionLimiter.DECELERATION: False,
+        }
+        self._pending_limiter_activity = dict(
+            self._reported_limiter_activity
+        )
+        self._pending_limiter_activity_since_s = {
+            limiter: 0.0 for limiter in self._reported_limiter_activity
+        }
+        self._arbitration_conflict_was_reported = False
+        self._arbitration_conflict_clear_since_s: float | None = None
 
     @property
     def snapshot(self) -> EngineSimulationSnapshot:
@@ -262,18 +324,33 @@ class EngineSimulationCoordinator:
             sensor_data=validation_result.sensor_data,
             time_step_s=time_step_s,
         )
-        allowed_command = self._protected_actuator_command(
+        allowed_command, protection_result = self._protected_actuator_command(
             requested_command=requested_command,
             operating_command=operating_command,
             sensor_data=validation_result.sensor_data,
+            sensor_critical_condition=(
+                sensor_fault_response.fuel_cutoff_required
+            ),
             time_step_s=time_step_s,
         )
-        if sensor_fault_response.fuel_cutoff_required:
+        if (
+            protection_result.critical_protection_fault_request
+            and operating_command.state is not EngineOperatingState.FAULT
+        ):
+            operating_command = self.state_machine.update(
+                request=EngineOperationRequest(
+                    throttle_command=request.throttle_command,
+                    fault_requested=True,
+                ),
+                sensor_data=validation_result.sensor_data,
+                time_step_s=time_step_s,
+            )
+            self.speed_controller.reset()
             allowed_command = ActuatorCommand(
-                fuel_command=0.0,
-                starter_commanded=False,
-                ignition_commanded=False,
-                fuel_enabled=False,
+                fuel_command=protection_result.final_fuel_command,
+                starter_commanded=operating_command.starter_commanded,
+                ignition_commanded=operating_command.ignition_commanded,
+                fuel_enabled=operating_command.fuel_enabled,
             )
 
         engine_outputs = self.engine_model.step(
@@ -286,11 +363,12 @@ class EngineSimulationCoordinator:
         self._record_sensor_events(
             validation_result=validation_result,
             sensor_fault_response=sensor_fault_response,
+            protection_result=protection_result,
         )
 
         egt_limiter_active = (
-            operating_command.speed_control_enabled
-            and allowed_command.fuel_command < requested_command.fuel_command
+            ProtectionDiagnosticReason.EGT_LIMITING
+            in protection_result.diagnostic_reasons
         )
         self._snapshot = EngineSimulationSnapshot(
             simulation_time_s=self._simulation_time_s,
@@ -351,6 +429,46 @@ class EngineSimulationCoordinator:
             ),
             requested_fuel_command=requested_command.fuel_command,
             allowed_fuel_command=allowed_command.fuel_command,
+            egt_fuel_limit=protection_result.egt_fuel_limit,
+            acceleration_fuel_limit=(
+                protection_result.acceleration_fuel_limit
+            ),
+            overspeed_fuel_limit=protection_result.overspeed_fuel_limit,
+            deceleration_minimum_fuel_command=(
+                protection_result.deceleration_minimum_fuel_command
+            ),
+            state_maximum_fuel_command=(
+                protection_result.state_maximum_fuel_command
+            ),
+            active_protection_limiter=protection_result.active_limiter,
+            constraining_protection_limiters=(
+                protection_result.constraining_limiters
+            ),
+            protection_diagnostic_reasons=(
+                protection_result.diagnostic_reasons
+            ),
+            rotor_acceleration_rpm_per_s=(
+                protection_result.rotor_acceleration_rpm_per_s
+            ),
+            rotor_deceleration_rpm_per_s=(
+                protection_result.rotor_deceleration_rpm_per_s
+            ),
+            speed_ratio=protection_result.speed_ratio,
+            soft_overspeed_active=(
+                protection_result.soft_overspeed_active
+            ),
+            hard_overspeed_active=(
+                protection_result.hard_overspeed_active
+            ),
+            protection_hard_cutoff_active=(
+                protection_result.hard_cutoff_active
+            ),
+            critical_protection_fault_request=(
+                protection_result.critical_protection_fault_request
+            ),
+            protection_arbitration_conflict=(
+                protection_result.arbitration_conflict
+            ),
             estimated_thrust_n=engine_outputs.estimated_thrust_n,
             estimated_fuel_flow_ml_min=(
                 engine_outputs.estimated_fuel_flow_ml_min
@@ -408,18 +526,29 @@ class EngineSimulationCoordinator:
         requested_command: ActuatorCommand,
         operating_command: EngineOperatingCommand,
         sensor_data: ValidatedSensorData,
+        sensor_critical_condition: bool,
         time_step_s: float,
-    ) -> ActuatorCommand:
-        """Apply EGT protection only in closed-loop running modes."""
+    ) -> tuple[ActuatorCommand, ProtectionResult]:
+        """Apply the centralized protection manager to requested fuel."""
 
-        if not operating_command.speed_control_enabled:
-            return requested_command
-
-        complete_sensor_data = self._required_sensor_data(sensor_data)
-        return self.egt_limiter.apply(
-            requested_command=requested_command,
-            sensor_data=complete_sensor_data,
+        protection_result = self.protection_manager.apply(
+            requested_fuel_command=requested_command.fuel_command,
+            sensor_data=sensor_data,
+            context=ProtectionContext(
+                operating_state=operating_command.state,
+                fuel_enabled=operating_command.fuel_enabled,
+                sensor_critical_condition=sensor_critical_condition,
+            ),
             time_step_s=time_step_s,
+        )
+        return (
+            ActuatorCommand(
+                fuel_command=protection_result.final_fuel_command,
+                starter_commanded=requested_command.starter_commanded,
+                ignition_commanded=requested_command.ignition_commanded,
+                fuel_enabled=requested_command.fuel_enabled,
+            ),
+            protection_result,
         )
 
     @staticmethod
@@ -444,8 +573,9 @@ class EngineSimulationCoordinator:
         self,
         validation_result: SensorValidationResult,
         sensor_fault_response: SensorFaultResponse,
+        protection_result: ProtectionResult,
     ) -> None:
-        """Record health transitions and newly activated critical responses."""
+        """Record sensor and protection transitions without repeated events."""
 
         channel_results = (
             (
@@ -481,6 +611,139 @@ class EngineSimulationCoordinator:
                 "Fuel cut off due to sensor invalidity",
             )
         self._automatic_fault_was_active = automatic_fault_active
+        self._record_protection_events(protection_result)
+
+    def _record_protection_events(
+        self,
+        protection_result: ProtectionResult,
+    ) -> None:
+        """Record protection activation, release, conflict, and critical edges."""
+
+        self._record_debounced_active_limiter(protection_result.active_limiter)
+        limiter_activity = {
+            ProtectionLimiter.ACCELERATION: (
+                ProtectionDiagnosticReason.ACCELERATION_LIMITING
+                in protection_result.diagnostic_reasons
+            ),
+            ProtectionLimiter.DECELERATION: (
+                ProtectionDiagnosticReason.DECELERATION_LIMITING
+                in protection_result.diagnostic_reasons
+            ),
+        }
+        for limiter, active in limiter_activity.items():
+            self._record_debounced_limiter_activity(limiter, active)
+
+        if (
+            protection_result.soft_overspeed_active
+            and not self._snapshot.soft_overspeed_active
+        ):
+            self.event_log.record(
+                self._simulation_time_s,
+                "Soft overspeed intervention activated",
+            )
+        if (
+            protection_result.hard_overspeed_active
+            and not self._snapshot.hard_overspeed_active
+        ):
+            self.event_log.record(
+                self._simulation_time_s,
+                "Hard overspeed fuel cutoff",
+            )
+        self._record_arbitration_conflict(protection_result)
+        if (
+            protection_result.critical_protection_fault_request
+            and not self._snapshot.critical_protection_fault_request
+        ):
+            self.event_log.record(
+                self._simulation_time_s,
+                "Critical protection FAULT request",
+            )
+
+    def _record_debounced_active_limiter(
+        self,
+        current_limiter: ProtectionLimiter,
+    ) -> None:
+        """Report primary-authority changes only after a stable short dwell."""
+
+        if current_limiter is not self._pending_active_protection_limiter:
+            self._pending_active_protection_limiter = current_limiter
+            self._pending_active_limiter_since_s = self._simulation_time_s
+            return
+        if (
+            current_limiter is self._reported_active_protection_limiter
+            or self._simulation_time_s
+            - self._pending_active_limiter_since_s
+            < 0.05
+        ):
+            return
+
+        previous_limiter = self._reported_active_protection_limiter
+        self.event_log.record(
+            self._simulation_time_s,
+            f"Active fuel limiter {previous_limiter.value} -> "
+            f"{current_limiter.value}",
+        )
+        self._reported_active_protection_limiter = current_limiter
+
+    def _record_debounced_limiter_activity(
+        self,
+        limiter: ProtectionLimiter,
+        active: bool,
+    ) -> None:
+        """Report sustained acceleration and deceleration limiter edges."""
+
+        if active is not self._pending_limiter_activity[limiter]:
+            self._pending_limiter_activity[limiter] = active
+            self._pending_limiter_activity_since_s[limiter] = (
+                self._simulation_time_s
+            )
+            return
+        if (
+            active is self._reported_limiter_activity[limiter]
+            or self._simulation_time_s
+            - self._pending_limiter_activity_since_s[limiter]
+            < 0.05
+        ):
+            return
+
+        label = (
+            "Acceleration limiter"
+            if limiter is ProtectionLimiter.ACCELERATION
+            else "Deceleration limiter"
+        )
+        self.event_log.record(
+            self._simulation_time_s,
+            f"{label} {'activated' if active else 'released'}",
+        )
+        self._reported_limiter_activity[limiter] = active
+
+    def _record_arbitration_conflict(
+        self,
+        protection_result: ProtectionResult,
+    ) -> None:
+        """Report a conflict once until normal arbitration is stable again."""
+
+        if protection_result.arbitration_conflict:
+            self._arbitration_conflict_clear_since_s = None
+            if not self._arbitration_conflict_was_reported:
+                self.event_log.record(
+                    self._simulation_time_s,
+                    "Fuel arbitration conflict; safety upper limit selected",
+                )
+                self._arbitration_conflict_was_reported = True
+            return
+
+        if not self._arbitration_conflict_was_reported:
+            return
+        if self._arbitration_conflict_clear_since_s is None:
+            self._arbitration_conflict_clear_since_s = self._simulation_time_s
+        elif (
+            self._simulation_time_s
+            - self._arbitration_conflict_clear_since_s
+            >= 1.0
+        ):
+            self._arbitration_conflict_was_reported = False
+            self._arbitration_conflict_clear_since_s = None
 
     @staticmethod
     def _measurement_error(
@@ -509,6 +772,7 @@ class EngineSimulationCoordinator:
     def _initial_snapshot(self) -> EngineSimulationSnapshot:
         """Create the safe initial OFF-state snapshot."""
 
+        protection_result = self.protection_manager.last_result
         return EngineSimulationSnapshot(
             simulation_time_s=0.0,
             previous_operating_state=EngineOperatingState.OFF,
@@ -546,6 +810,46 @@ class EngineSimulationCoordinator:
             ),
             requested_fuel_command=0.0,
             allowed_fuel_command=0.0,
+            egt_fuel_limit=protection_result.egt_fuel_limit,
+            acceleration_fuel_limit=(
+                protection_result.acceleration_fuel_limit
+            ),
+            overspeed_fuel_limit=protection_result.overspeed_fuel_limit,
+            deceleration_minimum_fuel_command=(
+                protection_result.deceleration_minimum_fuel_command
+            ),
+            state_maximum_fuel_command=(
+                protection_result.state_maximum_fuel_command
+            ),
+            active_protection_limiter=protection_result.active_limiter,
+            constraining_protection_limiters=(
+                protection_result.constraining_limiters
+            ),
+            protection_diagnostic_reasons=(
+                protection_result.diagnostic_reasons
+            ),
+            rotor_acceleration_rpm_per_s=(
+                protection_result.rotor_acceleration_rpm_per_s
+            ),
+            rotor_deceleration_rpm_per_s=(
+                protection_result.rotor_deceleration_rpm_per_s
+            ),
+            speed_ratio=protection_result.speed_ratio,
+            soft_overspeed_active=(
+                protection_result.soft_overspeed_active
+            ),
+            hard_overspeed_active=(
+                protection_result.hard_overspeed_active
+            ),
+            protection_hard_cutoff_active=(
+                protection_result.hard_cutoff_active
+            ),
+            critical_protection_fault_request=(
+                protection_result.critical_protection_fault_request
+            ),
+            protection_arbitration_conflict=(
+                protection_result.arbitration_conflict
+            ),
             estimated_thrust_n=0.0,
             estimated_fuel_flow_ml_min=0.0,
             starter_commanded=False,
