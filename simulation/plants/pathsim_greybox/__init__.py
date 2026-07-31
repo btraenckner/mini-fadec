@@ -5,9 +5,11 @@ from simulation.plants.pathsim_greybox.config import (
     PathSimInitialConditions,
     PathSimSolverConfig,
 )
+from simulation.plants.pathsim_greybox.model import PathSimGreyBoxEngineModel
 
 __all__ = [
     "PathSimGreyBoxConfig",
+    "PathSimGreyBoxEngineModel",
     "PathSimInitialConditions",
     "PathSimSolverConfig",
 ]

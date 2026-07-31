@@ -39,6 +39,7 @@ class PathSimPlantDiagnostics:
     equilibrium_temperature_c: float
     latest_integration_success: bool
     latest_solver_error_indicator: float | None
+    solver_step_count: int
     total_solver_evaluations: int | None
     total_solver_iterations: int | None
 
