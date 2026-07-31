@@ -32,6 +32,11 @@ def test_valid_configuration_is_accepted_and_serializes_deterministically() -> N
         ("fuel_time_constant_s", 0.0, "fuel_time_constant_s"),
         ("thermal_time_constant_s", -1.0, "thermal_time_constant_s"),
         ("normalized_inertia", 0.0, "normalized_inertia"),
+        (
+            "maximum_combustion_temperature_rise_c",
+            0.0,
+            "maximum_combustion_temperature_rise_c",
+        ),
         ("linear_fuel_temperature_gain_c", math.nan, "must be finite"),
         ("turbine_torque_gain_per_s", math.inf, "must be finite"),
     ),

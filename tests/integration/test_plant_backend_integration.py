@@ -7,8 +7,11 @@ from pathlib import Path
 import pytest
 
 from simulation.application.dashboard_model import DashboardSimulation
+from simulation.application.engine_simulation import EngineSimulationCoordinator
 from simulation.application.factory import create_application
 from simulation.operation.engine_state import EngineOperatingState
+from simulation.operation.state_machine import EngineOperationRequest
+from simulation.plants.config import PlantSelectionConfig
 from simulation.plants.factory import plant_selection_for
 from simulation.plants.types import PlantModelKind, PlantSimulationError
 from simulation.telemetry.recorder import RunRecorder, RunRecorderParameters
@@ -56,6 +59,46 @@ def test_pathsim_truth_flows_through_sensors_and_fadec_chain() -> None:
     assert snapshot.validated_rotor_speed_rpm is not None
     assert snapshot.plant_time_s == pytest.approx(snapshot.simulation_time_s)
     assert snapshot.plant_diagnostics is not None
+
+
+def test_pathsim_reaches_maximum_speed_without_sustained_egt_limiting() -> None:
+    coordinator = EngineSimulationCoordinator(
+        plant_config=PlantSelectionConfig(
+            model=PlantModelKind.PATHSIM_GREYBOX_V1
+        )
+    )
+    startup_requested = True
+    throttle_command = 0.0
+    idle_reached = False
+    maximum_egt_c = coordinator.snapshot.exhaust_temperature_c
+
+    for _ in range(int(15.0 / 0.01)):
+        snapshot = coordinator.step(
+            EngineOperationRequest(
+                throttle_command=throttle_command,
+                startup_requested=startup_requested,
+            ),
+            time_step_s=0.01,
+        )
+        startup_requested = False
+        maximum_egt_c = max(
+            maximum_egt_c,
+            snapshot.exhaust_temperature_c,
+        )
+        if snapshot.operating_state is EngineOperatingState.IDLE:
+            idle_reached = True
+            throttle_command = 1.0
+
+    assert idle_reached
+    assert snapshot.operating_state is EngineOperatingState.RUNNING
+    assert snapshot.rotor_speed_rpm == pytest.approx(128_000.0, rel=0.02)
+    assert maximum_egt_c <= (
+        coordinator.egt_limiter.parameters.maximum_exhaust_temperature_c
+    )
+    assert snapshot.exhaust_temperature_c < (
+        coordinator.egt_limiter.parameters.intervention_exhaust_temperature_c
+    )
+    assert not snapshot.egt_limiter_active
 
 
 def test_plant_switching_is_off_only_and_creates_clean_state() -> None:

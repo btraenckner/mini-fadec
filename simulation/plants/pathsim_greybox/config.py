@@ -85,6 +85,7 @@ class PathSimGreyBoxConfig:
     combustion_base_temperature_rise_c: float = 350.0
     linear_fuel_temperature_gain_c: float = 1_000.0
     quadratic_fuel_temperature_gain_c: float = 300.0
+    maximum_combustion_temperature_rise_c: float = 705.0
     speed_temperature_cooling_gain_c: float = 100.0
     thermal_time_constant_s: float = 0.35
     maximum_speed_rpm: float = 128_000.0
@@ -103,6 +104,10 @@ class PathSimGreyBoxConfig:
             ("fuel_time_constant_s", self.fuel_time_constant_s),
             ("normalized_inertia", self.normalized_inertia),
             ("thermal_time_constant_s", self.thermal_time_constant_s),
+            (
+                "maximum_combustion_temperature_rise_c",
+                self.maximum_combustion_temperature_rise_c,
+            ),
             ("maximum_speed_rpm", self.maximum_speed_rpm),
             ("maximum_normalized_speed", self.maximum_normalized_speed),
             ("thrust_speed_exponent", self.thrust_speed_exponent),

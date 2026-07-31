@@ -28,7 +28,7 @@ from simulation.plants.types import (
 class PathSimGreyBoxEngineModel:
     """Initial unvalidated nonlinear educational engine-plant backend."""
 
-    MODEL_VERSION = "0.1.0"
+    MODEL_VERSION = "0.2.0"
 
     def __init__(
         self,
@@ -232,6 +232,7 @@ class PathSimGreyBoxEngineModel:
                 "All parameters are unvalidated development assumptions",
                 "Single normalized spool with effective torque coefficients",
                 "Combustion support depends only on plant inputs and states",
+                "Combustion temperature rise is bounded by configuration",
                 "Ambient pressure applies only a bounded thrust correction",
             ),
             "model_limitations": (

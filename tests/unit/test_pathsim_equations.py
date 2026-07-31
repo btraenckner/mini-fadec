@@ -142,6 +142,22 @@ def test_equilibrium_temperature_increases_with_fuel() -> None:
     assert high.equilibrium_temperature_c > low.equilibrium_temperature_c
 
 
+def test_combustion_temperature_rise_is_bounded_at_full_fuel() -> None:
+    state = GreyBoxStateVector(
+        effective_fuel=1.0,
+        normalized_speed=1.0,
+        gas_temperature_c=600.0,
+    )
+
+    terms = calculate_algebraic_terms(state, _inputs(fuel=1.0), PARAMETERS)
+
+    assert terms.equilibrium_temperature_c == pytest.approx(
+        15.0
+        + PARAMETERS.maximum_combustion_temperature_rise_c
+        - PARAMETERS.speed_temperature_cooling_gain_c
+    )
+
+
 def test_thrust_is_nonnegative_and_increases_with_speed() -> None:
     stopped = calculate_thrust_n(
         GreyBoxStateVector(0.0, 0.0, 15.0),

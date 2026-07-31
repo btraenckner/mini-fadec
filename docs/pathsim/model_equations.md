@@ -73,14 +73,17 @@ documented state domain.
 ## Thermal dynamics
 
 ```text
-Delta_T_comb = eta_comb (T_base + a1 f_eff + a2 f_eff²)
+Delta_T_raw = eta_comb (T_base + a1 f_eff + a2 f_eff²)
+Delta_T_comb = min(Delta_T_raw, Delta_T_max)
 T_eq = max(T_min, T_amb + Delta_T_comb - a3 n)
 dT_g/dt = (T_eq - T_g) / tau_T
 ```
 
 The temperature equation is a thermal lag around a deliberately simple
-equilibrium relation. It is not a Brayton-cycle station model. The lower guard
-prevents integration below `T_min`.
+equilibrium relation. The configured temperature-rise bound keeps nominal
+high-speed operation compatible with the shared EGT protection thresholds
+without changing those thresholds. It is not a Brayton-cycle station model.
+The lower guard prevents integration below `T_min`.
 
 ## Algebraic outputs
 
@@ -109,6 +112,7 @@ mass-flow, or choking model is implied.
 | `combustion_base_temperature_rise_c` | 350 | °C |
 | `linear_fuel_temperature_gain_c` | 1000 | °C per normalized fuel |
 | `quadratic_fuel_temperature_gain_c` | 300 | °C per normalized fuel² |
+| `maximum_combustion_temperature_rise_c` | 705 | °C |
 | `speed_temperature_cooling_gain_c` | 100 | °C per normalized speed |
 | `thermal_time_constant_s` | 0.35 | s |
 | `maximum_speed_rpm` | 128000 | rpm |

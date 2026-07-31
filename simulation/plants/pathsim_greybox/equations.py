@@ -121,11 +121,15 @@ def calculate_algebraic_terms(
         parameters.compressor_load_gain_per_s * nonnegative_speed**2
     )
     friction_load = parameters.friction_load_gain_per_s * nonnegative_speed
-    combustion_temperature_rise_c = combustion_effectiveness * (
+    unbounded_combustion_temperature_rise_c = combustion_effectiveness * (
         parameters.combustion_base_temperature_rise_c
         + parameters.linear_fuel_temperature_gain_c * state.effective_fuel
         + parameters.quadratic_fuel_temperature_gain_c
         * state.effective_fuel**2
+    )
+    combustion_temperature_rise_c = min(
+        unbounded_combustion_temperature_rise_c,
+        parameters.maximum_combustion_temperature_rise_c,
     )
     equilibrium_temperature_c = max(
         parameters.minimum_gas_temperature_c,
