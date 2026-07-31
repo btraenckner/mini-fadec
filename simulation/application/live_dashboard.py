@@ -377,6 +377,7 @@ class LiveEngineDashboard:
             labels,
             active=active_index,
             activecolor=self._ACCENT_COLOR,
+            useblit=False,
             radio_props={
                 "edgecolor": self._MUTED_TEXT_COLOR,
                 "linewidth": 0.8,
@@ -1556,10 +1557,16 @@ class LiveEngineDashboard:
     def _set_plant_panel_visible(self, visible: bool) -> None:
         """Show or hide all axes belonging to the plant overlay."""
 
+        was_visible = self._plant_selector_axis.get_visible()
         self._plant_panel_visible = visible
         self._plant_panel_axis.set_visible(visible)
         self._plant_selector_axis.set_visible(visible)
+        self._plant_model_selector.active = visible
         self._plant_close_button.ax.set_visible(visible)
+        if was_visible and not visible:
+            # RadioButtons can otherwise leave their last marker collection
+            # over the live plots after the plant overlay is closed.
+            self._figure.canvas.draw()
 
     def _on_plant_selected(self, model_label: str) -> None:
         """Apply a stopped-only model selection through the application service."""

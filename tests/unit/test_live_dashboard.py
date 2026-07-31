@@ -159,6 +159,20 @@ def test_dashboard_plant_panel_selects_pathsim_and_shows_diagnostics() -> None:
     dashboard.close(save_result=False)
 
 
+def test_dashboard_hides_plant_selector_with_plant_panel() -> None:
+    dashboard = LiveEngineDashboard()
+
+    dashboard._on_plant_panel(None)
+    assert dashboard._plant_selector_axis.get_visible()
+    assert dashboard._plant_model_selector.active
+
+    dashboard._on_plant_panel(None)
+
+    assert not dashboard._plant_selector_axis.get_visible()
+    assert not dashboard._plant_model_selector.active
+    dashboard.close(save_result=False)
+
+
 def test_dashboard_plant_selection_rejection_is_visible_while_running() -> None:
     dashboard = LiveEngineDashboard()
     dashboard.dashboard_simulation.controls.request_startup()
