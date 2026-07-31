@@ -54,4 +54,3 @@ python -m simulation.scenarios.cli run SCN-PLANT-PS-001 \
 
 In the live dashboard, open `PLANT: FO`, select the backend while the engine is
 OFF, and inspect the read-only configuration and PathSim dynamic diagnostics.
-

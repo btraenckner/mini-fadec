@@ -46,4 +46,3 @@ Extension points already prepared: immutable grouped parameters, deterministic
 serialization, named equations, repeatable reset, telemetry of internal states,
 and isolated model-specific scenarios. Sprint 14 contains no automatic
 calibration and makes no physical-validation claim.
-
