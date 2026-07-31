@@ -262,6 +262,13 @@ class ScenarioRunner:
             ),
         )
 
+    def get_plant_metadata(self) -> dict[str, object]:
+        """Return selected plant metadata after scenario preparation."""
+
+        if self._service is None:
+            raise RuntimeError("no scenario has been prepared")
+        return self._service.get_plant_metadata()
+
     def _scenario_with_runtime_overrides(
         self,
         scenario: Scenario,

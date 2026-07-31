@@ -112,7 +112,7 @@ def test_dashboard_uses_grouped_dark_theme_and_live_status_indicators() -> None:
     )
     assert "150k" in speed_tick_labels
     assert "150000" not in speed_tick_labels
-    assert len(dashboard._scenario_dropdown_labels) == 13
+    assert len(dashboard._scenario_dropdown_labels) == 16
     assert dashboard._scenario_dropdown_labels[0].startswith("SCN-NORMAL-001")
     assert dashboard._scenario_dropdown_button.active is False
 
@@ -132,6 +132,44 @@ def test_dashboard_uses_grouped_dark_theme_and_live_status_indicators() -> None:
     assert dashboard._sensor_health_text.get_bbox_patch().get_facecolor() == (
         to_rgba(dashboard._DANGER_COLOR)
     )
+    dashboard.close(save_result=False)
+
+
+def test_dashboard_plant_panel_selects_pathsim_and_shows_diagnostics() -> None:
+    dashboard = LiveEngineDashboard()
+
+    dashboard._on_plant_panel(None)
+    dashboard._on_plant_selected("PathSim nonlinear grey-box v1")
+    dashboard.advance_and_refresh(0.01)
+
+    snapshot = dashboard.dashboard_simulation.get_latest_snapshot()
+    assert dashboard._plant_panel_axis.get_visible()
+    assert snapshot.plant_model_id == "pathsim_greybox_v1"
+    assert "PathSim nonlinear grey-box v1" in (
+        dashboard._plant_summary_text.get_text()
+    )
+    assert "fuel_time_constant_s" in (
+        dashboard._plant_configuration_text.get_text()
+    )
+    assert "effective fuel" in dashboard._plant_diagnostics_text.get_text()
+    assert "0.24.0" in dashboard._plant_diagnostics_text.get_text()
+    assert dashboard._plant_panel_button.label.get_text().startswith(
+        "PLANT: PS"
+    )
+    dashboard.close(save_result=False)
+
+
+def test_dashboard_plant_selection_rejection_is_visible_while_running() -> None:
+    dashboard = LiveEngineDashboard()
+    dashboard.dashboard_simulation.controls.request_startup()
+    dashboard.advance_and_refresh(0.01)
+
+    dashboard._on_plant_selected("PathSim nonlinear grey-box v1")
+
+    assert dashboard.dashboard_simulation.get_latest_snapshot().plant_model_id == (
+        "first_order"
+    )
+    assert "Selection rejected" in dashboard._plant_feedback_text.get_text()
     dashboard.close(save_result=False)
 
 

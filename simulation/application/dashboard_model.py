@@ -13,6 +13,11 @@ from simulation.application.engine_simulation import (
 from simulation.application.factory import create_application
 from simulation.application.simulation_service import SimulationService
 from simulation.operation.engine_state import EngineOperatingState
+from simulation.plants.factory import list_plant_models
+from simulation.plants.types import (
+    PlantModelDescriptor,
+    PlantModelKind,
+)
 from simulation.operation.state_machine import EngineOperationRequest
 from simulation.scenarios.definitions import Scenario
 from simulation.scenarios.library import list_all_scenarios
@@ -640,6 +645,38 @@ class DashboardSimulation:
         if self.scenario_mode_active and self._scenario_progress is not None:
             return self._scenario_progress.scheduler_diagnostics
         return self.service.get_scheduler_diagnostics()
+
+    @property
+    def selected_plant_model(self) -> PlantModelKind:
+        """Return the plant selected for manual and default scenario runs."""
+
+        return self.service.coordinator.plant_config.model
+
+    def available_plant_models(self) -> tuple[PlantModelDescriptor, ...]:
+        """Return the stable explicit plant registry for dashboard selection."""
+
+        return list_plant_models()
+
+    def select_plant_model(
+        self,
+        model: PlantModelKind | str,
+    ) -> PlantModelKind:
+        """Select a fresh plant only when no scenario execution is active."""
+
+        if self.scenario_is_running:
+            raise RuntimeError("plant model cannot change during a scenario")
+        self.service.select_plant_model(model)
+        self.coordinator = self.service.coordinator
+        self.history.clear()
+        self.history.append(self.service.get_latest_snapshot())
+        return self.service.coordinator.plant_config.model
+
+    def get_plant_metadata(self) -> dict[str, object]:
+        """Return metadata for the currently displayed manual or scenario plant."""
+
+        if self.scenario_mode_active and self._scenario_runner is not None:
+            return self._scenario_runner.get_plant_metadata()
+        return self.service.get_plant_metadata()
 
     def close(self) -> None:
         """Finalize active dashboard-owned execution and recording resources."""

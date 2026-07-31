@@ -17,6 +17,7 @@ from simulation.application.dashboard_model import (
 )
 from simulation.application.engine_simulation import EngineSimulationSnapshot
 from simulation.operation.engine_state import EngineOperatingState
+from simulation.plants.types import PlantSimulationError
 from simulation.scenarios.runner import ScenarioExecutionState
 from simulation.sensors.fault_injection import SensorChannel
 from simulation.validation.sensor_validation import ChannelHealth
@@ -54,6 +55,7 @@ class LiveEngineDashboard:
         self.result_path = Path(result_path)
 
         self._closed = False
+        self._plant_selection_updating = False
         self._last_displayed_event_sequence = 0
         self._last_update_time = time.monotonic()
         self._figure, self._plot_axes = self._create_figure()
@@ -61,6 +63,7 @@ class LiveEngineDashboard:
         self._create_controls()
         self._create_sensor_fault_controls()
         self._create_scenario_controls()
+        self._create_plant_panel()
         self._create_timing_panel()
         self._create_signal_plots()
         self._manual_control_widgets = (
@@ -109,7 +112,18 @@ class LiveEngineDashboard:
     ) -> EngineSimulationSnapshot:
         """Advance the simulation and refresh all dashboard elements."""
 
-        snapshot = self.dashboard_simulation.advance(elapsed_wall_time_s)
+        try:
+            snapshot = self.dashboard_simulation.advance(elapsed_wall_time_s)
+        except PlantSimulationError as error:
+            snapshot = self.dashboard_simulation.get_latest_snapshot()
+            self._refresh_dashboard(snapshot)
+            self._transition_text.set_text(
+                f"●  PLANT FAILURE  /  {self._shorten(str(error), 72)}"
+            )
+            self._transition_text.set_color(self._DANGER_COLOR)
+            self._timer.stop()
+            self._figure.canvas.draw_idle()
+            return snapshot
         self._refresh_dashboard(snapshot)
         return snapshot
 
@@ -275,33 +289,167 @@ class LiveEngineDashboard:
         self._scenario_dropdown_labels = scenario_labels
 
         self._scenario_progress_text = self._figure.text(
-            0.733,
-            0.937,
+            0.020,
+            0.934,
             "MANUAL CONTROL",
             fontsize=6.5,
             family="monospace",
             color=self._MUTED_TEXT_COLOR,
             verticalalignment="center",
         )
+        self._plant_panel_button = self._create_button(
+            bounds=(0.733, 0.928, 0.079, 0.026),
+            label="PLANT: FO",
+            color="#263950",
+            callback=self._on_plant_panel,
+        )
         self._timing_panel_button = self._create_button(
-            bounds=(0.778, 0.928, 0.055, 0.026),
+            bounds=(0.819, 0.928, 0.055, 0.026),
             label="TIMING",
             color="#263950",
             callback=self._on_timing_panel,
         )
         self._run_scenario_button = self._create_button(
-            bounds=(0.840, 0.928, 0.050, 0.026),
+            bounds=(0.881, 0.928, 0.040, 0.026),
             label="RUN",
             color="#176c54",
             callback=self._on_run_scenario,
         )
         self._cancel_scenario_button = self._create_button(
-            bounds=(0.900, 0.928, 0.070, 0.026),
+            bounds=(0.928, 0.928, 0.042, 0.026),
             label="CANCEL",
             color="#762f3a",
             callback=self._on_cancel_scenario,
         )
         self._update_scenario_status()
+
+    def _create_plant_panel(self) -> None:
+        """Create the stopped-only plant selector and diagnostics overlay."""
+
+        panel_axis = self._figure.add_axes((0.425, 0.12, 0.55, 0.75))
+        panel_axis.set_facecolor(self._PANEL_COLOR)
+        panel_axis.set_zorder(32)
+        panel_axis.set_xticks(())
+        panel_axis.set_yticks(())
+        for spine in panel_axis.spines.values():
+            spine.set_color(self._BORDER_COLOR)
+            spine.set_linewidth(1.2)
+        panel_axis.text(
+            0.035,
+            0.955,
+            "ENGINE PLANT MODEL",
+            transform=panel_axis.transAxes,
+            fontsize=11,
+            fontweight="bold",
+            color=self._TEXT_COLOR,
+            verticalalignment="top",
+        )
+        self._plant_summary_text = panel_axis.text(
+            0.035,
+            0.900,
+            "",
+            transform=panel_axis.transAxes,
+            fontsize=7.2,
+            family="monospace",
+            color=self._TEXT_COLOR,
+            verticalalignment="top",
+        )
+        panel_axis.text(
+            0.035,
+            0.795,
+            "SELECT MODEL  /  STOPPED ONLY",
+            transform=panel_axis.transAxes,
+            fontsize=7.5,
+            fontweight="bold",
+            color=self._MUTED_TEXT_COLOR,
+        )
+
+        models = self.dashboard_simulation.available_plant_models()
+        labels = tuple(model.display_name for model in models)
+        active_index = tuple(model.model for model in models).index(
+            self.dashboard_simulation.selected_plant_model
+        )
+        selector_axis = self._figure.add_axes((0.455, 0.625, 0.35, 0.075))
+        selector_axis.set_zorder(33)
+        self._style_widget_axis(selector_axis)
+        self._plant_model_selector = RadioButtons(
+            selector_axis,
+            labels,
+            active=active_index,
+            activecolor=self._ACCENT_COLOR,
+            radio_props={
+                "edgecolor": self._MUTED_TEXT_COLOR,
+                "linewidth": 0.8,
+                "s": 34.0,
+            },
+        )
+        for label in self._plant_model_selector.labels:
+            label.set_fontsize(8)
+            label.set_color(self._TEXT_COLOR)
+        self._plant_model_selector.on_clicked(self._on_plant_selected)
+        self._plant_models = models
+        self._plant_model_labels = labels
+
+        panel_axis.text(
+            0.035,
+            0.630,
+            "ACTIVE CONFIGURATION  /  UNVALIDATED ASSUMPTIONS",
+            transform=panel_axis.transAxes,
+            fontsize=7.5,
+            fontweight="bold",
+            color=self._WARNING_COLOR,
+        )
+        self._plant_configuration_text = panel_axis.text(
+            0.035,
+            0.595,
+            "",
+            transform=panel_axis.transAxes,
+            fontsize=6.15,
+            family="monospace",
+            color=self._MUTED_TEXT_COLOR,
+            verticalalignment="top",
+            linespacing=1.22,
+        )
+        panel_axis.text(
+            0.535,
+            0.630,
+            "PATHSIM DYNAMICS  /  READ ONLY",
+            transform=panel_axis.transAxes,
+            fontsize=7.5,
+            fontweight="bold",
+            color=self._MUTED_TEXT_COLOR,
+        )
+        self._plant_diagnostics_text = panel_axis.text(
+            0.535,
+            0.595,
+            "",
+            transform=panel_axis.transAxes,
+            fontsize=6.4,
+            family="monospace",
+            color=self._TEXT_COLOR,
+            verticalalignment="top",
+            linespacing=1.3,
+        )
+        self._plant_feedback_text = panel_axis.text(
+            0.035,
+            0.045,
+            "Changing the model creates a fresh, fully reset application.",
+            transform=panel_axis.transAxes,
+            fontsize=7,
+            color=self._MUTED_TEXT_COLOR,
+        )
+        close_button = self._create_button(
+            bounds=(0.907, 0.823, 0.050, 0.028),
+            label="CLOSE",
+            color="#263950",
+            callback=self._on_plant_panel,
+        )
+        close_button.ax.set_zorder(34)
+        self._plant_panel_axis = panel_axis
+        self._plant_selector_axis = selector_axis
+        self._plant_close_button = close_button
+        self._plant_panel_visible = False
+        self._set_plant_panel_visible(False)
 
     def _create_timing_panel(self) -> None:
         """Create a read-only modal scheduler diagnostics panel."""
@@ -994,6 +1142,7 @@ class LiveEngineDashboard:
         self._update_scenario_status()
         self._update_recording_status()
         self._update_timing_panel()
+        self._update_plant_panel(snapshot)
         self._figure.canvas.draw_idle()
 
     def _update_status(self, snapshot: EngineSimulationSnapshot) -> None:
@@ -1344,6 +1493,8 @@ class LiveEngineDashboard:
         """Open or close the scheduler diagnostics overlay."""
 
         self._hide_scenario_dropdown()
+        if not self._timing_panel_visible and self._plant_panel_visible:
+            self._set_plant_panel_visible(False)
         self._set_timing_panel_visible(not self._timing_panel_visible)
         self._update_timing_panel()
         self._figure.canvas.draw_idle()
@@ -1389,6 +1540,178 @@ class LiveEngineDashboard:
                 f"{task.missed_release_count:4d}"
             )
         self._timing_table_text.set_text("\n".join(table_lines))
+
+    def _on_plant_panel(self, _event: object) -> None:
+        """Open or close the plant selection and diagnostics overlay."""
+
+        self._hide_scenario_dropdown()
+        if not self._plant_panel_visible and self._timing_panel_visible:
+            self._set_timing_panel_visible(False)
+        self._set_plant_panel_visible(not self._plant_panel_visible)
+        self._update_plant_panel(
+            self.dashboard_simulation.get_latest_snapshot()
+        )
+        self._figure.canvas.draw_idle()
+
+    def _set_plant_panel_visible(self, visible: bool) -> None:
+        """Show or hide all axes belonging to the plant overlay."""
+
+        self._plant_panel_visible = visible
+        self._plant_panel_axis.set_visible(visible)
+        self._plant_selector_axis.set_visible(visible)
+        self._plant_close_button.ax.set_visible(visible)
+
+    def _on_plant_selected(self, model_label: str) -> None:
+        """Apply a stopped-only model selection through the application service."""
+
+        if self._plant_selection_updating:
+            return
+        try:
+            model_index = self._plant_model_labels.index(model_label)
+            model = self._plant_models[model_index].model
+            self.dashboard_simulation.select_plant_model(model)
+        except (RuntimeError, ValueError) as error:
+            self._plant_feedback_text.set_text(f"Selection rejected: {error}")
+            self._plant_feedback_text.set_color(self._DANGER_COLOR)
+            self._synchronize_plant_selector(
+                self.dashboard_simulation.get_latest_snapshot().plant_model_id
+            )
+        else:
+            self._plant_feedback_text.set_text(
+                "Selected fresh plant instance; simulation state reset."
+            )
+            self._plant_feedback_text.set_color(self._SUCCESS_COLOR)
+        self._update_plant_panel(
+            self.dashboard_simulation.get_latest_snapshot()
+        )
+        self._figure.canvas.draw_idle()
+
+    def _update_plant_panel(
+        self,
+        snapshot: EngineSimulationSnapshot,
+    ) -> None:
+        """Refresh selected plant, configuration, and optional diagnostics."""
+
+        scheduler = self.dashboard_simulation.get_scheduler_diagnostics()
+        plant_task = next(
+            task for task in scheduler.tasks if task.task_name == "plant"
+        )
+        pathsim_diagnostics = snapshot.plant_diagnostics
+        solver = (
+            pathsim_diagnostics.solver_id
+            if pathsim_diagnostics is not None
+            else "algebraic / explicit Euler update"
+        )
+        self._plant_summary_text.set_text(
+            f"{snapshot.plant_display_name}  |  model {snapshot.plant_model_version}\n"
+            f"solver {solver}  |  plant period "
+            f"{plant_task.effective_period_s * 1_000.0:g} ms  |  "
+            f"plant T+ {snapshot.plant_time_s:.3f} s\n"
+            f"RPM {snapshot.rotor_speed_rpm:,.1f}  |  "
+            f"EGT {snapshot.exhaust_temperature_c:.2f} °C  |  "
+            f"thrust {snapshot.estimated_thrust_n:.3f} N"
+        )
+        metadata = self.dashboard_simulation.get_plant_metadata()
+        configuration = metadata.get("configuration", {})
+        self._plant_configuration_text.set_text(
+            self._format_plant_configuration(configuration)
+        )
+        if pathsim_diagnostics is None:
+            self._plant_diagnostics_text.set_text(
+                "Not available for the first-order reference.\n"
+                "No PathSim values are fabricated."
+            )
+        else:
+            self._plant_diagnostics_text.set_text(
+                f"effective fuel     {pathsim_diagnostics.effective_fuel:9.5f}\n"
+                f"normalized speed   {pathsim_diagnostics.normalized_speed:9.5f}\n"
+                f"gas temperature    {pathsim_diagnostics.gas_temperature_c:9.2f} °C\n"
+                f"combustion eff.    {pathsim_diagnostics.combustion_effectiveness:9.5f}\n"
+                f"starter torque     {pathsim_diagnostics.starter_torque:9.5f}\n"
+                f"turbine torque     {pathsim_diagnostics.turbine_torque:9.5f}\n"
+                f"compressor load    {pathsim_diagnostics.compressor_load:9.5f}\n"
+                f"friction load      {pathsim_diagnostics.friction_load:9.5f}\n"
+                f"equilibrium EGT    {pathsim_diagnostics.equilibrium_temperature_c:9.2f} °C\n"
+                f"solver steps       {pathsim_diagnostics.solver_step_count:9d}\n"
+                f"solver evaluations {pathsim_diagnostics.total_solver_evaluations or 0:9d}\n"
+                f"PathSim version    {pathsim_diagnostics.pathsim_version:>9s}"
+            )
+        self._synchronize_plant_selector(snapshot.plant_model_id)
+        compact_model = (
+            "PS" if snapshot.plant_model_id == "pathsim_greybox_v1" else "FO"
+        )
+        self._plant_panel_button.label.set_text(
+            f"PLANT: {compact_model}{' ▲' if self._plant_panel_visible else ''}"
+        )
+
+    def _synchronize_plant_selector(self, model_id: str) -> None:
+        """Update the selector marker without recursively selecting a plant."""
+
+        matching_index = next(
+            (
+                index
+                for index, descriptor in enumerate(self._plant_models)
+                if descriptor.model.value == model_id
+            ),
+            None,
+        )
+        if matching_index is None:
+            return
+        self._plant_selection_updating = True
+        previous_event_state = self._plant_model_selector.eventson
+        self._plant_model_selector.eventson = False
+        self._plant_model_selector.set_active(matching_index)
+        self._plant_model_selector.eventson = previous_event_state
+        self._plant_selection_updating = False
+
+    @classmethod
+    def _format_plant_configuration(cls, configuration: object) -> str:
+        """Format a bounded read-only parameter list with effective units."""
+
+        if not isinstance(configuration, dict):
+            return "Configuration unavailable"
+        lines: list[str] = []
+        for name, value in cls._flatten_configuration(configuration):
+            if len(lines) >= 18:
+                lines.append("… additional values in run metadata")
+                break
+            lines.append(
+                f"{name[:31]:31s} {str(value):>10s} {cls._parameter_unit(name)}"
+            )
+        return "\n".join(lines)
+
+    @classmethod
+    def _flatten_configuration(
+        cls,
+        configuration: dict[str, object],
+        prefix: str = "",
+    ) -> tuple[tuple[str, object], ...]:
+        values: list[tuple[str, object]] = []
+        for name, value in configuration.items():
+            full_name = f"{prefix}.{name}" if prefix else name
+            if isinstance(value, dict):
+                values.extend(cls._flatten_configuration(value, full_name))
+            else:
+                values.append((full_name, value))
+        return tuple(values)
+
+    @staticmethod
+    def _parameter_unit(name: str) -> str:
+        if name.endswith("_rpm"):
+            return "rpm"
+        if name.endswith("_c"):
+            return "°C"
+        if name.endswith("_n"):
+            return "N"
+        if name.endswith("_pa"):
+            return "Pa"
+        if "per_s" in name:
+            return "effective s⁻¹"
+        if name.endswith("_s"):
+            return "s"
+        if "ratio" in name or "fuel" in name or "normalized" in name:
+            return "normalized"
+        return "effective"
 
     def _on_scenario_selected(self, scenario_label: str) -> None:
         """Select one scenario from the runner-mode dropdown."""
