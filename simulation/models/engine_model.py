@@ -1,12 +1,16 @@
 """Simplified dynamic engine model for the Mini-FADEC simulation."""
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 from simulation.core.types import (
     ActuatorCommand,
     AmbientConditions,
     EngineOutputs,
     EngineState,
+)
+from simulation.plants.types import (
+    PlantDiagnostics,
+    PlantModelKind,
 )
 
 
@@ -43,6 +47,8 @@ class EngineModelParameters:
 class FirstOrderEngineModel:
     """First-order grey-box model of a single-spool turbine."""
 
+    MODEL_VERSION = "1.0.0"
+
     def __init__(
         self,
         parameters: EngineModelParameters | None = None,
@@ -50,18 +56,16 @@ class FirstOrderEngineModel:
         initially_running: bool = False,
     ) -> None:
         self.parameters = parameters or EngineModelParameters()
+        self._initially_running = initially_running
         self._combustion_lit = initially_running
-
-        self._state = EngineState(
-            rotor_speed_rpm=(
-                self.parameters.idle_speed_rpm if initially_running else 0.0
-            ),
-            exhaust_temperature_c=(
-                self.parameters.idle_exhaust_temperature_c
-                if initially_running
-                else self.parameters.stopped_exhaust_temperature_c
-            ),
+        self._model_time_s = 0.0
+        self._step_count = 0
+        self._latest_outputs = EngineOutputs(
+            estimated_thrust_n=0.0,
+            estimated_fuel_flow_ml_min=0.0,
         )
+
+        self._state = self._initial_state()
 
     @classmethod
     def running_at_idle(
@@ -77,6 +81,42 @@ class FirstOrderEngineModel:
         """Return the current internal engine state."""
 
         return self._state
+
+    @property
+    def model_id(self) -> str:
+        """Return the stable backend identifier."""
+
+        return PlantModelKind.FIRST_ORDER.value
+
+    @property
+    def display_name(self) -> str:
+        """Return the human-readable backend name."""
+
+        return "First-order reference"
+
+    @property
+    def model_version(self) -> str:
+        """Return the project-owned first-order model version."""
+
+        return self.MODEL_VERSION
+
+    def reset(
+        self,
+        *,
+        ambient: AmbientConditions | None = None,
+    ) -> None:
+        """Restore the original first-order initial condition."""
+
+        # Ambient effects remain intentionally outside the reference equations.
+        _ = ambient
+        self._combustion_lit = self._initially_running
+        self._state = self._initial_state()
+        self._model_time_s = 0.0
+        self._step_count = 0
+        self._latest_outputs = EngineOutputs(
+            estimated_thrust_n=0.0,
+            estimated_fuel_flow_ml_min=0.0,
+        )
 
     def step(
         self,
@@ -156,10 +196,61 @@ class FirstOrderEngineModel:
         # Ambient pressure and temperature effects are not yet modeled.
         _ = ambient_conditions
 
-        return self._calculate_outputs(
+        outputs = self._calculate_outputs(
             fuel_command=fuel_command,
             fuel_enabled=actuator_command.fuel_enabled,
         )
+        self._model_time_s += time_step_s
+        self._step_count += 1
+        self._latest_outputs = outputs
+        return outputs
+
+    def get_diagnostics(self) -> PlantDiagnostics:
+        """Return immutable common diagnostics without fabricated PathSim data."""
+
+        return PlantDiagnostics(
+            model_id=self.model_id,
+            display_name=self.display_name,
+            model_version=self.model_version,
+            model_time_s=self._model_time_s,
+            step_count=self._step_count,
+            latest_rotor_speed_rpm=self._state.rotor_speed_rpm,
+            latest_exhaust_temperature_c=(
+                self._state.exhaust_temperature_c
+            ),
+            latest_thrust_n=self._latest_outputs.estimated_thrust_n,
+            pathsim=None,
+        )
+
+    def get_metadata(self) -> dict[str, object]:
+        """Return a fresh JSON-serializable description of this backend."""
+
+        return {
+            "plant_model_id": self.model_id,
+            "plant_display_name": self.display_name,
+            "plant_model_version": self.model_version,
+            "configuration": asdict(self.parameters),
+            "initial_conditions": {
+                "initially_running": self._initially_running,
+                "rotor_speed_rpm": self._initial_state().rotor_speed_rpm,
+                "exhaust_temperature_c": (
+                    self._initial_state().exhaust_temperature_c
+                ),
+            },
+            "pathsim_package_version": None,
+            "solver_configuration": None,
+            "state_names": (
+                "rotor_speed_rpm",
+                "exhaust_temperature_c",
+            ),
+            "model_assumptions": (
+                "Simplified first-order regression reference",
+                "Ambient effects are not modeled",
+            ),
+            "model_limitations": (
+                "Not validated against a specific physical engine",
+            ),
+        }
 
     def _calculate_outputs(
         self,
@@ -210,6 +301,22 @@ class FirstOrderEngineModel:
             normalized_speed,
             minimum=0.0,
             maximum=1.0,
+        )
+
+    def _initial_state(self) -> EngineState:
+        """Build a fresh initial state without sharing mutable truth."""
+
+        return EngineState(
+            rotor_speed_rpm=(
+                self.parameters.idle_speed_rpm
+                if self._initially_running
+                else 0.0
+            ),
+            exhaust_temperature_c=(
+                self.parameters.idle_exhaust_temperature_c
+                if self._initially_running
+                else self.parameters.stopped_exhaust_temperature_c
+            ),
         )
 
     @staticmethod

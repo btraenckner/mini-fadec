@@ -55,6 +55,9 @@ Current activities:
 * Establishing the repository structure
 * Preparing the Python simulation environment
 
+The selectable PathSim plant backend and its learning examples are documented
+in [docs/pathsim/overview.md](docs/pathsim/overview.md).
+
 ## Safety Notice
 
 This project is intended for educational and experimental purposes.

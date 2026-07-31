@@ -4,7 +4,7 @@ import platform
 import subprocess
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeAlias
 
@@ -12,7 +12,7 @@ from simulation.telemetry.events import EVENT_SCHEMA_VERSION
 from simulation.telemetry.snapshot import TELEMETRY_SCHEMA_VERSION
 
 
-METADATA_SCHEMA_VERSION = "1.1"
+METADATA_SCHEMA_VERSION = "1.2"
 
 ConfigurationValue: TypeAlias = str | int | float | bool | None
 
@@ -46,6 +46,7 @@ class RunMetadataContext:
     configuration_identifier: str = "default"
     configuration_summary: tuple[tuple[str, ConfigurationValue], ...] = ()
     repository_root: Path | None = None
+    plant_metadata: dict[str, object] = field(default_factory=dict)
 
 
 GitMetadataProvider: TypeAlias = Callable[[Path | None], GitMetadata]
@@ -82,6 +83,7 @@ def build_run_metadata(
 ) -> dict[str, object]:
     """Build metadata in one explicit deterministic key order."""
 
+    plant_metadata = dict(context.plant_metadata)
     return {
         "metadata_schema_version": METADATA_SCHEMA_VERSION,
         "telemetry_schema_version": TELEMETRY_SCHEMA_VERSION,
@@ -96,6 +98,23 @@ def build_run_metadata(
         "telemetry_sampling_period_s": telemetry_sampling_period_s,
         "sensor_random_seed": context.sensor_random_seed,
         "engine_model_identifier": context.engine_model_identifier,
+        "plant_model_id": plant_metadata.get("plant_model_id"),
+        "plant_display_name": plant_metadata.get("plant_display_name"),
+        "plant_model_version": plant_metadata.get("plant_model_version"),
+        "plant_configuration": plant_metadata.get("configuration"),
+        "plant_initial_conditions": plant_metadata.get(
+            "initial_conditions"
+        ),
+        "pathsim_package_version": plant_metadata.get(
+            "pathsim_package_version"
+        ),
+        "plant_solver_configuration": plant_metadata.get(
+            "solver_configuration"
+        ),
+        "plant_solver_api": plant_metadata.get("solver_api"),
+        "plant_state_names": plant_metadata.get("state_names"),
+        "plant_model_assumptions": plant_metadata.get("model_assumptions"),
+        "plant_model_limitations": plant_metadata.get("model_limitations"),
         "controller_identifier": context.controller_identifier,
         "protection_manager_identifier": (
             context.protection_manager_identifier

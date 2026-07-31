@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from collections.abc import Iterable
 from typing import TypeAlias
 
+from simulation.plants.config import PlantSelectionConfig
 from simulation.scenarios.actions import (
     ScenarioAction,
     validate_action_definition,
@@ -61,6 +62,7 @@ class Scenario:
     expected_terminal_condition: ScenarioCondition | None = None
     configuration_overrides: ScenarioConfigurationOverrides = ()
     random_seed: int | None = 0
+    plant_config_override: PlantSelectionConfig | None = None
 
     def __post_init__(self) -> None:
         if not self.scenario_id.strip():

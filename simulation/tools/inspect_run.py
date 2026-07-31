@@ -47,6 +47,28 @@ def inspect_run(run_directory: Path) -> str:
         )
         is not None
     ]
+    plant_effective_fuel = [
+        value
+        for row in telemetry
+        if (
+            value := _optional_number(row, "plant_effective_fuel")
+        )
+        is not None
+    ]
+    plant_normalized_speed = [
+        value
+        for row in telemetry
+        if (
+            value := _optional_number(row, "plant_normalized_speed")
+        )
+        is not None
+    ]
+    solver_configuration = metadata.get("plant_solver_configuration")
+    solver_id = (
+        solver_configuration.get("solver_id", "unavailable")
+        if isinstance(solver_configuration, dict)
+        else "unavailable"
+    )
 
     lines = (
         f"Run name: {metadata.get('run_name', 'unavailable')}",
@@ -54,6 +76,16 @@ def inspect_run(run_directory: Path) -> str:
         f"Samples: {len(telemetry)}",
         f"Events: {len(events)}",
         f"Git commit: {metadata.get('git_commit') or 'unavailable'}",
+        (
+            "Plant: "
+            f"{metadata.get('plant_display_name') or 'unavailable'} "
+            f"({metadata.get('plant_model_id') or 'unavailable'})"
+        ),
+        (
+            "PathSim version: "
+            f"{metadata.get('pathsim_package_version') or 'not applicable'}"
+        ),
+        f"Plant solver: {solver_id}",
         "Maximum true/validated RPM: "
         f"{_maximum(telemetry, 'rotor_speed_rpm'):.1f} / "
         f"{_maximum_optional(telemetry, 'validated_rotor_speed_rpm')}",
@@ -62,6 +94,21 @@ def inspect_run(run_directory: Path) -> str:
         f"{_maximum_optional(telemetry, 'validated_exhaust_temperature_c')}",
         "Maximum estimated acceleration: "
         f"{max(acceleration) if acceleration else 'unavailable'}",
+        f"Maximum thrust: {_maximum(telemetry, 'estimated_thrust_n'):.3f} N",
+        (
+            "PathSim effective-fuel range: "
+            f"{min(plant_effective_fuel):.6f} .. "
+            f"{max(plant_effective_fuel):.6f}"
+            if plant_effective_fuel
+            else "PathSim effective-fuel range: unavailable"
+        ),
+        (
+            "PathSim normalized-speed range: "
+            f"{min(plant_normalized_speed):.6f} .. "
+            f"{max(plant_normalized_speed):.6f}"
+            if plant_normalized_speed
+            else "PathSim normalized-speed range: unavailable"
+        ),
         f"Final fuel range: {min(final_fuel):.3f} .. {max(final_fuel):.3f}",
         "Active limiter samples: "
         + ", ".join(

@@ -38,6 +38,11 @@ def write_verification_artifacts(
             "scenario_name": result.scenario_name,
             "overall_result": result.overall_status.value,
             "execution_status": result.execution_status,
+            "plant": {
+                "model_id": result.plant_model_id,
+                "display_name": result.plant_display_name,
+                "model_version": result.plant_model_version,
+            },
             "scheduler": {
                 "preset": result.scheduler_preset,
                 "base_tick_s": result.scheduler_base_tick_s,
@@ -127,6 +132,11 @@ def _write_markdown_report(
         f"- Execution status: {result.execution_status}",
         f"- Simulated duration: {result.simulated_duration_s:.3f} s",
         f"- Scheduler preset: {result.scheduler_preset}",
+        (
+            "- Plant model: "
+            f"{result.plant_display_name} ({result.plant_model_id}, "
+            f"version {result.plant_model_version})"
+        ),
         f"- Scheduler base tick: {result.scheduler_base_tick_s:.6f} s",
         (
             "- Scheduler execution convention: "

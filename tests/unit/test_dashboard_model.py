@@ -13,6 +13,7 @@ from simulation.application.dashboard_model import (
     DashboardSimulation,
 )
 from simulation.application.engine_simulation import EngineSimulationCoordinator
+from simulation.plants.types import PlantModelKind
 from simulation.scenarios.actions import AddMarkerAction
 from simulation.scenarios.definitions import Scenario
 from simulation.scenarios.runner import ScenarioExecutionState
@@ -322,5 +323,37 @@ def test_dashboard_rejects_scheduler_change_during_scenario(
 
     with pytest.raises(RuntimeError, match="during a scenario"):
         dashboard_simulation.select_scheduler_preset("slow-sensors")
+
+    dashboard_simulation.cancel_scenario()
+
+
+def test_dashboard_selects_fresh_plant_for_manual_and_scenario_paths(
+    tmp_path: Path,
+) -> None:
+    scenario = _short_dashboard_scenario(str(tmp_path))
+    dashboard_simulation = DashboardSimulation(scenarios=(scenario,))
+
+    selected = dashboard_simulation.select_plant_model(
+        PlantModelKind.PATHSIM_GREYBOX_V1
+    )
+    dashboard_simulation.enter_runner_mode()
+    progress = dashboard_simulation.start_selected_scenario()
+
+    assert selected is PlantModelKind.PATHSIM_GREYBOX_V1
+    assert progress.latest_snapshot.plant_model_id == "pathsim_greybox_v1"
+    assert dashboard_simulation.get_plant_metadata()[
+        "pathsim_package_version"
+    ] == "0.24.0"
+    dashboard_simulation.cancel_scenario()
+
+
+def test_dashboard_rejects_plant_change_during_scenario(tmp_path: Path) -> None:
+    scenario = _short_dashboard_scenario(str(tmp_path))
+    dashboard_simulation = DashboardSimulation(scenarios=(scenario,))
+    dashboard_simulation.enter_runner_mode()
+    dashboard_simulation.start_selected_scenario()
+
+    with pytest.raises(RuntimeError, match="during a scenario"):
+        dashboard_simulation.select_plant_model("pathsim_greybox_v1")
 
     dashboard_simulation.cancel_scenario()

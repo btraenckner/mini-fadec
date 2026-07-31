@@ -35,6 +35,11 @@ def scenario_to_dict(scenario: Scenario) -> dict[str, object]:
         ),
         "configuration_overrides": dict(scenario.configuration_overrides),
         "random_seed": scenario.random_seed,
+        "plant_config_override": (
+            definition_to_dict(scenario.plant_config_override)
+            if scenario.plant_config_override is not None
+            else None
+        ),
     }
 
 

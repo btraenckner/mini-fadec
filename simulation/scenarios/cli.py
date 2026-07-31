@@ -4,6 +4,7 @@ import argparse
 import json
 from collections.abc import Sequence
 
+from simulation.plants.factory import list_plant_models, plant_selection_for
 from simulation.scenarios.library import (
     get_scenario,
     list_all_scenarios,
@@ -24,6 +25,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("list", help="list registered regression scenarios")
     subparsers.add_parser("presets", help="list scheduler timing presets")
+    subparsers.add_parser("plants", help="list selectable plant models")
     show_parser = subparsers.add_parser("show", help="show one scenario")
     show_parser.add_argument("scenario")
     run_parser = subparsers.add_parser("run", help="run one scenario")
@@ -31,6 +33,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
     run_parser.add_argument(
         "--scheduler",
         choices=_scheduler_preset_names(),
+    )
+    run_parser.add_argument(
+        "--plant",
+        choices=_plant_model_ids(),
     )
     run_all_parser = subparsers.add_parser(
         "run-all",
@@ -49,12 +55,20 @@ def main(arguments: Sequence[str] | None = None) -> int:
         if parsed.command == "presets":
             _print_scheduler_presets()
             return 0
+        if parsed.command == "plants":
+            _print_plant_models()
+            return 0
         if parsed.command == "show":
             _print_scenario(get_scenario(parsed.scenario))
             return 0
         if parsed.command == "run":
             result = ScenarioRunner(
-                scheduler_preset=parsed.scheduler
+                scheduler_preset=parsed.scheduler,
+                plant_config=(
+                    plant_selection_for(parsed.plant)
+                    if parsed.plant is not None
+                    else None
+                ),
             ).run_scenario(
                 get_scenario(parsed.scenario)
             )
@@ -108,6 +122,16 @@ def _scheduler_preset_names() -> tuple[str, ...]:
     )
 
 
+def _print_plant_models() -> None:
+    print("MODEL ID                 DISPLAY NAME")
+    for model in list_plant_models():
+        print(f"{model.model.value:24s} {model.display_name}")
+
+
+def _plant_model_ids() -> tuple[str, ...]:
+    return tuple(model.model.value for model in list_plant_models())
+
+
 def _print_scenario(scenario: object) -> None:
     payload = definition_to_dict(scenario)
     print(json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False))
@@ -119,6 +143,7 @@ def _print_result(result: ScenarioResult) -> None:
     print(f"Simulated time:  {result.simulated_duration_s:.3f} s")
     print(f"Wall-clock time: {result.wall_clock_execution_duration_s:.6f} s")
     print(f"Result:          {result.overall_status.value}")
+    print(f"Plant:           {result.plant_display_name}")
     print(
         "Requirements:    "
         f"{result.passed_requirement_count} passed, "

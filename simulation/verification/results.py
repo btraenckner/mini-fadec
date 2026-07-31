@@ -53,6 +53,9 @@ class ScenarioResult:
         tuple[str, int, int, int, bool],
         ...,
     ]
+    plant_model_id: str
+    plant_display_name: str
+    plant_model_version: str
     wall_clock_execution_duration_s: float
     real_time_factor: float | None
     final_engine_state: EngineOperatingState

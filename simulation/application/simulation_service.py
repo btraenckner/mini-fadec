@@ -5,6 +5,13 @@ from pathlib import Path
 from simulation.application.engine_simulation import EngineSimulationCoordinator
 from simulation.operation.state_machine import EngineOperationRequest
 from simulation.operation.engine_state import EngineOperatingState
+from simulation.plants.config import PlantSelectionConfig
+from simulation.plants.factory import plant_selection_for
+from simulation.plants.types import (
+    PlantDiagnostics,
+    PlantModelKind,
+    PlantSimulationError,
+)
 from simulation.scheduling.config import (
     SchedulerConfig,
     SchedulingMode,
@@ -43,18 +50,23 @@ class SimulationService:
         coordinator: EngineSimulationCoordinator | None = None,
         recorder: RunRecorder | None = None,
         scheduler_config: SchedulerConfig | None = None,
+        plant_config: PlantSelectionConfig | None = None,
         scheduling_mode: SchedulingMode = SchedulingMode.UNPACED,
         *,
         time_step_s: float = 0.01,
     ) -> None:
-        if coordinator is not None and scheduler_config is not None:
+        if coordinator is not None and (
+            scheduler_config is not None or plant_config is not None
+        ):
             raise ValueError(
-                "provide scheduler_config only when constructing the coordinator"
+                "provide scheduler_config and plant_config only when constructing "
+                "the coordinator"
             )
         if time_step_s <= 0.0:
             raise ValueError("time_step_s must be greater than zero")
         self.coordinator = coordinator or EngineSimulationCoordinator(
-            scheduler_config=scheduler_config
+            scheduler_config=scheduler_config,
+            plant_config=plant_config,
         )
         seconds_to_ticks(
             time_step_s,
@@ -155,13 +167,24 @@ class SimulationService:
 
         step_size_s = self.time_step_s if time_step_s is None else time_step_s
         request = self._consume_operation_request()
-        return self.coordinator.step(request=request, time_step_s=step_size_s)
+        try:
+            return self.coordinator.step(
+                request=request,
+                time_step_s=step_size_s,
+            )
+        except PlantSimulationError:
+            self.stop_recording(completed=False)
+            raise
 
     def step_one_tick(self) -> SimulationSnapshot:
         """Advance exactly one scheduler base tick through the shared path."""
 
         self.coordinator.submit_request(self._consume_operation_request())
-        return self.coordinator.step_one_tick()
+        try:
+            return self.coordinator.step_one_tick()
+        except PlantSimulationError:
+            self.stop_recording(completed=False)
+            raise
 
     @property
     def base_tick_s(self) -> float:
@@ -179,6 +202,72 @@ class SimulationService:
         """Return immutable full timing diagnostics for application clients."""
 
         return self.coordinator.scheduler_diagnostics()
+
+    def get_plant_diagnostics(self) -> PlantDiagnostics:
+        """Return immutable diagnostics for the selected physical plant."""
+
+        return self.coordinator.engine_model.get_diagnostics()
+
+    def get_plant_metadata(self) -> dict[str, object]:
+        """Return a fresh serializable description of the selected plant."""
+
+        return self.coordinator.engine_model.get_metadata()
+
+    def select_plant_model(
+        self,
+        selection: PlantSelectionConfig | PlantModelKind | str,
+    ) -> PlantSelectionConfig:
+        """Select a fresh plant only while OFF and not recording."""
+
+        selected_config = (
+            selection
+            if isinstance(selection, PlantSelectionConfig)
+            else plant_selection_for(
+                selection,
+                base=self.coordinator.plant_config,
+            )
+        )
+        if selected_config == self.coordinator.plant_config:
+            return selected_config
+        if self.recorder.is_recording:
+            message = "plant model cannot change while recording is active"
+            self._emit_plant_rejection(message)
+            raise RuntimeError(message)
+        if self.coordinator.snapshot.operating_state is not EngineOperatingState.OFF:
+            message = "plant model can change only while the engine is OFF"
+            self._emit_plant_rejection(message)
+            raise RuntimeError(message)
+
+        previous_model_id = self.coordinator.engine_model.model_id
+        scheduler_config = self.coordinator.scheduler_config
+        ambient_conditions = self.coordinator.ambient_conditions
+        self.coordinator.stop_scheduler()
+        replacement = EngineSimulationCoordinator(
+            plant_config=selected_config,
+            scheduler_config=scheduler_config,
+            ambient_conditions=ambient_conditions,
+        )
+        self._attach_coordinator(replacement)
+        self.coordinator.event_log.emit(
+            0.0,
+            EventCategory.SYSTEM,
+            EventType.PLANT_MODEL_SELECTED,
+            EventSeverity.INFO,
+            "plant_factory",
+            f"Plant model selected: {replacement.engine_model.display_name}",
+            old_value=previous_model_id,
+            new_value=replacement.engine_model.model_id,
+        )
+        self.coordinator.event_log.emit(
+            0.0,
+            EventCategory.SYSTEM,
+            EventType.PLANT_RESET,
+            EventSeverity.INFO,
+            "plant_factory",
+            "Plant and retained application state reset",
+            new_value=replacement.engine_model.model_id,
+        )
+        return selected_config
 
     def select_scheduler_preset(self, preset_name: str) -> SchedulerConfig:
         """Select a preset only while stopped, resetting all retained state."""
@@ -207,16 +296,12 @@ class SimulationService:
             raise RuntimeError(message)
         previous_preset = self.coordinator.scheduler_config.preset_name
         self.coordinator.stop_scheduler()
-        self.coordinator = EngineSimulationCoordinator(
-            scheduler_config=selected_config
+        replacement = EngineSimulationCoordinator(
+            scheduler_config=selected_config,
+            plant_config=self.coordinator.plant_config,
+            ambient_conditions=self.coordinator.ambient_conditions,
         )
-        self.coordinator.add_telemetry_sink(self.recorder)
-        self.coordinator.event_log.add_sink(self.recorder)
-        self._throttle_demand = 0.0
-        self._startup_requested = False
-        self._shutdown_requested = False
-        self._fault_requested = False
-        self._reset_requested = False
+        self._attach_coordinator(replacement)
         self.coordinator.event_log.emit(
             0.0,
             EventCategory.SYSTEM,
@@ -237,6 +322,32 @@ class SimulationService:
             new_value=selected_config.preset_name,
         )
         return selected_config
+
+    def _emit_plant_rejection(self, message: str) -> None:
+        self.coordinator.event_log.emit(
+            self.current_simulation_time_s,
+            EventCategory.SYSTEM,
+            EventType.PLANT_CONFIGURATION_REJECTED,
+            EventSeverity.WARNING,
+            "plant_factory",
+            message,
+            old_value=self.coordinator.engine_model.model_id,
+        )
+
+    def _attach_coordinator(
+        self,
+        coordinator: EngineSimulationCoordinator,
+    ) -> None:
+        """Attach existing sinks and clear held application commands."""
+
+        self.coordinator = coordinator
+        self.coordinator.add_telemetry_sink(self.recorder)
+        self.coordinator.event_log.add_sink(self.recorder)
+        self._throttle_demand = 0.0
+        self._startup_requested = False
+        self._shutdown_requested = False
+        self._fault_requested = False
+        self._reset_requested = False
 
     def _emit_scheduler_rejection(self, message: str) -> None:
         """Record an immutable timing-change rejection before raising."""
@@ -407,18 +518,31 @@ class SimulationService:
         if isinstance(self.coordinator.sensor_model, ConfigurableSensorModel):
             sensor_seed = self.coordinator.sensor_model.configuration.random_seed
 
-        engine_parameters = self.coordinator.engine_model.parameters
+        plant_metadata = self.coordinator.engine_model.get_metadata()
+        plant_configuration = plant_metadata.get("configuration", {})
+        if not isinstance(plant_configuration, dict):
+            plant_configuration = {}
         controller_parameters = self.coordinator.speed_controller.parameters
         egt_parameters = self.coordinator.egt_limiter.parameters
         overspeed_parameters = (
             self.coordinator.protection_manager.overspeed_limiter.parameters
         )
         configuration_summary = (
-            ("engine_idle_speed_rpm", engine_parameters.idle_speed_rpm),
-            ("engine_maximum_speed_rpm", engine_parameters.maximum_speed_rpm),
+            ("plant_model_id", self.coordinator.engine_model.model_id),
+            (
+                "engine_idle_speed_rpm",
+                plant_configuration.get("idle_speed_rpm"),
+            ),
+            (
+                "engine_maximum_speed_rpm",
+                plant_configuration.get("maximum_speed_rpm"),
+            ),
             (
                 "engine_exhaust_temperature_time_constant_s",
-                engine_parameters.exhaust_temperature_time_constant_s,
+                plant_configuration.get(
+                    "exhaust_temperature_time_constant_s",
+                    plant_configuration.get("thermal_time_constant_s"),
+                ),
             ),
             (
                 "controller_proportional_gain",
@@ -475,6 +599,7 @@ class SimulationService:
             simulation_scheduling_mode=self.scheduling_mode.value,
             configuration_summary=configuration_summary,
             repository_root=Path(__file__).resolve().parents[2],
+            plant_metadata=plant_metadata,
         )
 
     @staticmethod

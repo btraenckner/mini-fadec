@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import TypeAlias
 
 from simulation.operation.engine_state import EngineOperatingState
+from simulation.plants.types import PathSimPlantDiagnostics
 from simulation.protection.types import (
     ProtectionDiagnosticReason,
     ProtectionLimiter,
@@ -14,7 +15,7 @@ from simulation.validation.sensor_validation import (
 )
 
 
-TELEMETRY_SCHEMA_VERSION = "1.1"
+TELEMETRY_SCHEMA_VERSION = "1.2"
 
 FaultParameterValue: TypeAlias = float | str | bool | None
 FaultParameters: TypeAlias = tuple[tuple[str, FaultParameterValue], ...]
@@ -117,3 +118,10 @@ class SimulationSnapshot:
     controller_execution_count: int
     protection_execution_count: int
     state_machine_execution_count: int
+
+    plant_model_id: str
+    plant_display_name: str
+    plant_model_version: str
+    plant_time_s: float
+    plant_step_count: int
+    plant_diagnostics: PathSimPlantDiagnostics | None
