@@ -243,7 +243,7 @@ def test_zero_noise_is_deterministic_regardless_of_seed() -> None:
     assert first_measurement == second_measurement
 
 
-def test_rotor_speed_and_egt_can_use_different_sample_periods() -> None:
+def test_central_sensor_release_samples_both_channels_together() -> None:
     sensor_model = _sensor_model(
         rotor_speed=replace(
             NOISE_FREE_SPEED_CONFIGURATION,
@@ -262,14 +262,13 @@ def test_rotor_speed_and_egt_can_use_different_sample_periods() -> None:
     engine_state.rotor_speed_rpm = 20_000.0
     engine_state.exhaust_temperature_c = 200.0
 
-    sensor_model.measure(engine_state, time_step_s=0.005)
     measurement = sensor_model.measure(engine_state, time_step_s=0.005)
 
     assert measurement.rotor_speed_rpm == pytest.approx(20_000.0)
-    assert measurement.exhaust_temperature_c == pytest.approx(100.0)
+    assert measurement.exhaust_temperature_c == pytest.approx(200.0)
 
 
-def test_channel_retains_previous_value_between_sample_instants() -> None:
+def test_each_measure_call_is_one_central_scheduler_release() -> None:
     sensor_model = _sensor_model(
         rotor_speed=replace(
             NOISE_FREE_SPEED_CONFIGURATION,
@@ -283,17 +282,16 @@ def test_channel_retains_previous_value_between_sample_instants() -> None:
     initial_measurement = sensor_model.measure(engine_state, time_step_s=0.005)
     engine_state.rotor_speed_rpm = 20_000.0
 
-    retained_measurement = sensor_model.measure(
+    updated_measurement = sensor_model.measure(
         engine_state,
         time_step_s=0.005,
     )
 
-    assert retained_measurement.rotor_speed_rpm == pytest.approx(
-        initial_measurement.rotor_speed_rpm
-    )
+    assert initial_measurement.rotor_speed_rpm == pytest.approx(10_000.0)
+    assert updated_measurement.rotor_speed_rpm == pytest.approx(20_000.0)
 
 
-def test_channels_update_independently() -> None:
+def test_component_sample_periods_remain_available_as_configuration_metadata() -> None:
     sensor_model = _sensor_model(
         rotor_speed=replace(
             NOISE_FREE_SPEED_CONFIGURATION,
@@ -304,19 +302,9 @@ def test_channels_update_independently() -> None:
             sample_period_s=0.03,
         ),
     )
-    engine_state = EngineState(
-        rotor_speed_rpm=10_000.0,
-        exhaust_temperature_c=100.0,
-    )
-    initial_measurement = sensor_model.measure(engine_state, time_step_s=0.01)
-    engine_state.rotor_speed_rpm = 20_000.0
-    engine_state.exhaust_temperature_c = 200.0
-
-    updated_measurement = sensor_model.measure(engine_state, time_step_s=0.01)
-
-    assert updated_measurement.rotor_speed_rpm == pytest.approx(20_000.0)
-    assert updated_measurement.exhaust_temperature_c == pytest.approx(
-        initial_measurement.exhaust_temperature_c
+    assert sensor_model.rotor_speed_sample_period_s == pytest.approx(0.01)
+    assert sensor_model.exhaust_temperature_sample_period_s == pytest.approx(
+        0.03
     )
 
 
@@ -355,7 +343,7 @@ def test_invalid_time_step_is_rejected(time_step_s: float) -> None:
         )
 
 
-def test_reset_restores_initial_sampling_behavior() -> None:
+def test_reset_does_not_delay_the_next_central_sensor_release() -> None:
     sensor_model = _sensor_model(
         rotor_speed=replace(
             NOISE_FREE_SPEED_CONFIGURATION,
@@ -368,13 +356,14 @@ def test_reset_restores_initial_sampling_behavior() -> None:
     )
     sensor_model.measure(engine_state, time_step_s=0.01)
     engine_state.rotor_speed_rpm = 20_000.0
-    retained_measurement = sensor_model.measure(engine_state, time_step_s=0.01)
+    updated_measurement = sensor_model.measure(engine_state, time_step_s=0.01)
 
     sensor_model.reset()
+    engine_state.rotor_speed_rpm = 30_000.0
     reset_measurement = sensor_model.measure(engine_state, time_step_s=0.01)
 
-    assert retained_measurement.rotor_speed_rpm == pytest.approx(10_000.0)
-    assert reset_measurement.rotor_speed_rpm == pytest.approx(20_000.0)
+    assert updated_measurement.rotor_speed_rpm == pytest.approx(20_000.0)
+    assert reset_measurement.rotor_speed_rpm == pytest.approx(30_000.0)
 
 
 def test_reset_restores_reproducible_seeded_behavior() -> None:

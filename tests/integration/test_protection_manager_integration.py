@@ -213,10 +213,17 @@ def test_rapid_demand_reduction_is_limited_but_shutdown_is_immediate() -> None:
             time_step_s=0.01,
         )
 
-    deceleration_snapshot = coordinator.step(
-        EngineOperationRequest(throttle_command=0.3),
-        time_step_s=0.01,
-    )
+    # The 20 ms state-machine task must first accept the new throttle demand;
+    # the following protection release then applies the deceleration floor.
+    for _ in range(3):
+        deceleration_snapshot = coordinator.step(
+            EngineOperationRequest(throttle_command=0.3),
+            time_step_s=0.01,
+        )
+        if ProtectionLimiter.DECELERATION in (
+            deceleration_snapshot.constraining_protection_limiters
+        ):
+            break
     assert ProtectionLimiter.DECELERATION in (
         deceleration_snapshot.constraining_protection_limiters
     )
@@ -225,10 +232,13 @@ def test_rapid_demand_reduction_is_limited_but_shutdown_is_immediate() -> None:
         > deceleration_snapshot.requested_fuel_command
     )
 
-    shutdown_snapshot = coordinator.step(
-        EngineOperationRequest(shutdown_requested=True),
-        time_step_s=0.01,
-    )
+    for _ in range(2):
+        shutdown_snapshot = coordinator.step(
+            EngineOperationRequest(shutdown_requested=True),
+            time_step_s=0.01,
+        )
+        if shutdown_snapshot.operating_state is EngineOperatingState.SHUTDOWN:
+            break
     assert shutdown_snapshot.operating_state is EngineOperatingState.SHUTDOWN
     assert shutdown_snapshot.allowed_fuel_command == pytest.approx(0.0)
     assert shutdown_snapshot.protection_hard_cutoff_active

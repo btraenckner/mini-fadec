@@ -1,6 +1,5 @@
-"""Configurable sensor model for the Mini-FADEC simulation."""
+"""Configurable sensor model sampled by the central scheduler."""
 
-import math
 import random
 from dataclasses import dataclass, field
 
@@ -78,8 +77,6 @@ class ConfigurableSensorModel:
         )
         self._initial_random_state = self._random.getstate()
 
-        self._rotor_speed_elapsed_s = 0.0
-        self._egt_elapsed_s = 0.0
         self._retained_rotor_speed_rpm: float | None = None
         self._retained_exhaust_temperature_c: float | None = None
 
@@ -100,22 +97,33 @@ class ConfigurableSensorModel:
         engine_state: EngineState,
         time_step_s: float,
     ) -> SensorData:
-        """Publish sampled measurements derived from the current truth state."""
+        """Sample both channels once and retain the newly released values."""
 
         if time_step_s <= 0.0:
             raise ValueError("time_step_s must be greater than zero")
 
-        self._update_rotor_speed_measurement(engine_state, time_step_s)
-        self._update_exhaust_temperature_measurement(
-            engine_state,
-            time_step_s,
+        rotor_configuration = self.configuration.rotor_speed
+        egt_configuration = self.configuration.exhaust_temperature
+        self._retained_rotor_speed_rpm = self._measure_value(
+            true_value=engine_state.rotor_speed_rpm,
+            bias=rotor_configuration.bias_rpm,
+            noise_standard_deviation=(
+                rotor_configuration.noise_standard_deviation_rpm
+            ),
+            quantization_step=rotor_configuration.quantization_step_rpm,
+            minimum_value=rotor_configuration.minimum_value_rpm,
+            maximum_value=rotor_configuration.maximum_value_rpm,
         )
-
-        if (
-            self._retained_rotor_speed_rpm is None
-            or self._retained_exhaust_temperature_c is None
-        ):
-            raise RuntimeError("sensor model did not produce valid measurements")
+        self._retained_exhaust_temperature_c = self._measure_value(
+            true_value=engine_state.exhaust_temperature_c,
+            bias=egt_configuration.bias_c,
+            noise_standard_deviation=(
+                egt_configuration.noise_standard_deviation_c
+            ),
+            quantization_step=egt_configuration.quantization_step_c,
+            minimum_value=egt_configuration.minimum_value_c,
+            maximum_value=egt_configuration.maximum_value_c,
+        )
 
         return SensorData(
             rotor_speed_rpm=self._retained_rotor_speed_rpm,
@@ -123,65 +131,11 @@ class ConfigurableSensorModel:
         )
 
     def reset(self) -> None:
-        """Reset sample timing, retained values, and deterministic randomness."""
+        """Reset retained values and deterministic random state."""
 
-        self._rotor_speed_elapsed_s = 0.0
-        self._egt_elapsed_s = 0.0
         self._retained_rotor_speed_rpm = None
         self._retained_exhaust_temperature_c = None
         self._random.setstate(self._initial_random_state)
-
-    def _update_rotor_speed_measurement(
-        self,
-        engine_state: EngineState,
-        time_step_s: float,
-    ) -> None:
-        """Update or retain the independently sampled rotor-speed signal."""
-
-        configuration = self.configuration.rotor_speed
-        should_sample, self._rotor_speed_elapsed_s = self._sampling_state(
-            retained_value=self._retained_rotor_speed_rpm,
-            elapsed_s=self._rotor_speed_elapsed_s,
-            time_step_s=time_step_s,
-            sample_period_s=configuration.sample_period_s,
-        )
-        if should_sample:
-            self._retained_rotor_speed_rpm = self._measure_value(
-                true_value=engine_state.rotor_speed_rpm,
-                bias=configuration.bias_rpm,
-                noise_standard_deviation=(
-                    configuration.noise_standard_deviation_rpm
-                ),
-                quantization_step=configuration.quantization_step_rpm,
-                minimum_value=configuration.minimum_value_rpm,
-                maximum_value=configuration.maximum_value_rpm,
-            )
-
-    def _update_exhaust_temperature_measurement(
-        self,
-        engine_state: EngineState,
-        time_step_s: float,
-    ) -> None:
-        """Update or retain the independently sampled EGT signal."""
-
-        configuration = self.configuration.exhaust_temperature
-        should_sample, self._egt_elapsed_s = self._sampling_state(
-            retained_value=self._retained_exhaust_temperature_c,
-            elapsed_s=self._egt_elapsed_s,
-            time_step_s=time_step_s,
-            sample_period_s=configuration.sample_period_s,
-        )
-        if should_sample:
-            self._retained_exhaust_temperature_c = self._measure_value(
-                true_value=engine_state.exhaust_temperature_c,
-                bias=configuration.bias_c,
-                noise_standard_deviation=(
-                    configuration.noise_standard_deviation_c
-                ),
-                quantization_step=configuration.quantization_step_c,
-                minimum_value=configuration.minimum_value_c,
-                maximum_value=configuration.maximum_value_c,
-            )
 
     def _measure_value(
         self,
@@ -210,24 +164,6 @@ class ConfigurableSensorModel:
 
         return max(minimum_value, min(quantized_value, maximum_value))
 
-    @staticmethod
-    def _sampling_state(
-        retained_value: float | None,
-        elapsed_s: float,
-        time_step_s: float,
-        sample_period_s: float,
-    ) -> tuple[bool, float]:
-        """Return whether to sample and the retained fractional elapsed time."""
-
-        if retained_value is None:
-            return True, 0.0
-
-        updated_elapsed_s = elapsed_s + time_step_s
-        tolerance_s = 1.0e-12 * max(1.0, sample_period_s)
-        if updated_elapsed_s + tolerance_s < sample_period_s:
-            return False, updated_elapsed_s
-
-        return True, math.fmod(updated_elapsed_s, sample_period_s)
 
 
 def _validate_channel_configuration(

@@ -164,10 +164,13 @@ def test_normal_lifecycle_protection_and_events_are_recorded(
     ]
     assert EventType.LIMITER_ACTIVATED.value in event_types
     assert EventType.USER_MARKER.value in event_types
+    # Event monitoring runs at the 5 ms safety-observation rate, while routine
+    # telemetry is intentionally sampled at 50 ms and may not capture a short
+    # limiter transient.
     assert any(
-        float(row["egt_fuel_limit"])
-        < float(row["requested_fuel_command"])
-        for row in telemetry
+        row["event_type"] == EventType.LIMITER_ACTIVATED.value
+        and "EGT" in row["message"]
+        for row in events
     )
     assert all(
         0.0 <= float(row["allowed_fuel_command"]) <= 1.0
@@ -195,7 +198,12 @@ def test_sensor_fault_records_health_cutoff_and_automatic_fault(
         SensorChannel.ROTOR_SPEED,
         DropoutSensorFault(),
     )
-    fault_snapshot = service.step()
+    first_fault_snapshot = service.step()
+    assert first_fault_snapshot.allowed_fuel_command == 0.0
+    for _ in range(2):
+        fault_snapshot = service.step()
+        if fault_snapshot.operating_state is EngineOperatingState.FAULT:
+            break
     service.stop_recording()
 
     event_types = {

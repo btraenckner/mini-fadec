@@ -126,8 +126,10 @@ def nominal_multirate() -> SchedulerConfig:
             protection_s=0.005,
             actuator_s=0.005,
             plant_s=0.001,
-            snapshot_s=0.020,
-            event_monitor_s=0.020,
+            # Safety-relevant held protection changes must be observable before
+            # the next 20 ms state-supervision release.
+            snapshot_s=0.005,
+            event_monitor_s=0.005,
             telemetry_s=0.050,
             dashboard_s=0.050,
         ),
@@ -237,4 +239,3 @@ def _replace_periods(
         execution_convention=source.execution_convention,
         mandatory_regression=mandatory_regression,
     )
-

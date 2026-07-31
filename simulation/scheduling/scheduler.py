@@ -228,16 +228,21 @@ class DeterministicScheduler:
         return TaskDiagnostics(
             task_name=state.definition.name,
             enabled=state.enabled,
+            period_ticks=state.definition.period_ticks,
+            phase_offset_ticks=state.definition.phase_offset_ticks,
+            priority=state.definition.priority,
             release_count=state.release_count,
             execution_count=state.execution_count,
             last_release_tick=state.last_release_tick,
             last_execution_tick=state.last_execution_tick,
             next_release_tick=state.next_release_tick,
             last_execution_simulation_time_s=last_execution_time_s,
+            next_release_simulation_time_s=(
+                state.next_release_tick * self.config.base_tick_s
+            ),
             effective_period_s=(
                 state.definition.period_ticks * self.config.base_tick_s
             ),
             missed_release_count=state.missed_release_count,
             skipped_execution_count=state.skipped_execution_count,
         )
-

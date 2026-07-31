@@ -65,6 +65,15 @@ class EventType(Enum):
     AUTOMATIC_FAULT_REQUESTED = "AUTOMATIC_FAULT_REQUESTED"
     SAFETY_FUEL_CUTOFF = "SAFETY_FUEL_CUTOFF"
     ARBITRATION_CONFLICT = "ARBITRATION_CONFLICT"
+    SCHEDULER_INITIALIZED = "SCHEDULER_INITIALIZED"
+    SCHEDULER_RESET = "SCHEDULER_RESET"
+    SCHEDULER_PRESET_SELECTED = "SCHEDULER_PRESET_SELECTED"
+    SCHEDULER_CONFIGURATION_REJECTED = "SCHEDULER_CONFIGURATION_REJECTED"
+    SCHEDULER_TASK_ENABLED = "SCHEDULER_TASK_ENABLED"
+    SCHEDULER_TASK_DISABLED = "SCHEDULER_TASK_DISABLED"
+    SCHEDULER_MISSED_RELEASE = "SCHEDULER_MISSED_RELEASE"
+    SCHEDULER_RUN_STARTED = "SCHEDULER_RUN_STARTED"
+    SCHEDULER_RUN_STOPPED = "SCHEDULER_RUN_STOPPED"
     LEGACY_MESSAGE = "LEGACY_MESSAGE"
 
 
@@ -216,6 +225,7 @@ class SimulationEventMonitor:
         self._reported_limiter = initial_snapshot.active_protection_limiter
         self._pending_limiter = initial_snapshot.active_protection_limiter
         self._pending_limiter_since_s = initial_snapshot.simulation_time_s
+        self._egt_limiter_reported = initial_snapshot.egt_limiter_active
         self._conflict_reported = initial_snapshot.protection_arbitration_conflict
         self._conflict_clear_since_s: float | None = None
 
@@ -320,6 +330,7 @@ class SimulationEventMonitor:
 
     def _protection_events(self, snapshot: SimulationSnapshot) -> None:
         self._debounce_active_limiter(snapshot)
+        self._egt_limiter_events(snapshot)
         if snapshot.soft_overspeed_active and not self._previous.soft_overspeed_active:
             self.event_log.emit(
                 snapshot.simulation_time_s,
@@ -387,6 +398,30 @@ class SimulationEventMonitor:
                 new_value=0.0,
             )
         self._arbitration_conflict_event(snapshot)
+
+    def _egt_limiter_events(self, snapshot: SimulationSnapshot) -> None:
+        """Report EGT limiter activity even when another limiter constrains."""
+
+        current = snapshot.egt_limiter_active
+        if current is self._egt_limiter_reported:
+            return
+        event_type = (
+            EventType.LIMITER_ACTIVATED
+            if current
+            else EventType.LIMITER_RELEASED
+        )
+        action = "activated" if current else "released"
+        self.event_log.emit(
+            snapshot.simulation_time_s,
+            EventCategory.PROTECTION,
+            event_type,
+            EventSeverity.WARNING if current else EventSeverity.INFO,
+            "egt_limiter",
+            f"EGT limiter {action}",
+            old_value=self._egt_limiter_reported,
+            new_value=current,
+        )
+        self._egt_limiter_reported = current
 
     def _debounce_active_limiter(self, snapshot: SimulationSnapshot) -> None:
         current = snapshot.active_protection_limiter

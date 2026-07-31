@@ -18,9 +18,9 @@ def test_initial_snapshot_contains_safe_dashboard_telemetry() -> None:
     assert snapshot.measured_exhaust_temperature_c == pytest.approx(
         snapshot.exhaust_temperature_c
     )
-    assert snapshot.rotor_speed_sensor_sample_period_s == pytest.approx(0.01)
+    assert snapshot.rotor_speed_sensor_sample_period_s == pytest.approx(0.005)
     assert snapshot.exhaust_temperature_sensor_sample_period_s == pytest.approx(
-        0.02
+        0.005
     )
     assert snapshot.estimated_thrust_n == pytest.approx(0.0)
     assert snapshot.estimated_fuel_flow_ml_min == pytest.approx(0.0)
@@ -42,10 +42,13 @@ def test_running_snapshot_contains_setpoint_and_engine_outputs() -> None:
         if snapshot.operating_state is EngineOperatingState.IDLE:
             break
 
-    snapshot = coordinator.step(
-        request=EngineOperationRequest(throttle_command=0.5),
-        time_step_s=time_step_s,
-    )
+    for _ in range(3):
+        snapshot = coordinator.step(
+            request=EngineOperationRequest(throttle_command=0.5),
+            time_step_s=time_step_s,
+        )
+        if snapshot.operating_state is EngineOperatingState.RUNNING:
+            break
 
     assert snapshot.operating_state is EngineOperatingState.RUNNING
     assert snapshot.speed_setpoint_rpm == pytest.approx(83_500.0)

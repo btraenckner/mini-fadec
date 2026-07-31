@@ -112,10 +112,19 @@ def test_rotor_speed_dropout_during_running_requests_fault_and_cuts_fuel() -> No
         DropoutSensorFault(),
     )
 
-    snapshot = coordinator.step(
+    first_fault_snapshot = coordinator.step(
         EngineOperationRequest(throttle_command=0.5),
         time_step_s=0.01,
     )
+    assert first_fault_snapshot.allowed_fuel_command == pytest.approx(0.0)
+    controller_calls_at_detection = len(controller.received_sensor_data)
+    for _ in range(2):
+        snapshot = coordinator.step(
+            EngineOperationRequest(throttle_command=0.5),
+            time_step_s=0.01,
+        )
+        if snapshot.operating_state is EngineOperatingState.FAULT:
+            break
 
     assert snapshot.measured_rotor_speed_rpm is None
     assert snapshot.rotor_speed_health is ChannelHealth.INVALID
@@ -124,7 +133,8 @@ def test_rotor_speed_dropout_during_running_requests_fault_and_cuts_fuel() -> No
     assert snapshot.allowed_fuel_command == pytest.approx(0.0)
     assert snapshot.fuel_enabled is False
     assert snapshot.fuel_cutoff_due_to_sensor_invalidity
-    assert controller.received_sensor_data == []
+    assert controller_calls_at_detection <= 1
+    assert len(controller.received_sensor_data) == controller_calls_at_detection
     event_messages = [event.message for event in coordinator.event_log.events]
     assert any("Injected rpm sensor fault" in message for message in event_messages)
     assert any("VALID -> INVALID" in message for message in event_messages)
@@ -142,10 +152,18 @@ def test_egt_dropout_during_running_requests_fault_and_cuts_fuel() -> None:
         DropoutSensorFault(),
     )
 
-    snapshot = coordinator.step(
+    first_fault_snapshot = coordinator.step(
         EngineOperationRequest(throttle_command=0.5),
         time_step_s=0.01,
     )
+    assert first_fault_snapshot.allowed_fuel_command == pytest.approx(0.0)
+    for _ in range(2):
+        snapshot = coordinator.step(
+            EngineOperationRequest(throttle_command=0.5),
+            time_step_s=0.01,
+        )
+        if snapshot.operating_state is EngineOperatingState.FAULT:
+            break
 
     assert snapshot.measured_exhaust_temperature_c is None
     assert snapshot.exhaust_temperature_health is ChannelHealth.INVALID
@@ -237,22 +255,24 @@ def test_controller_and_protection_receive_faulted_validated_values_not_truth() 
         BiasSensorFault(offset=500.0),
     )
 
-    snapshot = coordinator.step(
-        EngineOperationRequest(throttle_command=0.5),
-        time_step_s=0.01,
-    )
+    for _ in range(3):
+        snapshot = coordinator.step(
+            EngineOperationRequest(throttle_command=0.5),
+            time_step_s=0.01,
+        )
 
     controller_data = controller.received_sensor_data[-1]
     limiter_data = limiter.received_sensor_data[-1]
-    assert controller_data == limiter_data
-    assert controller_data.rotor_speed_rpm == pytest.approx(
-        true_speed_before_step_rpm + 500.0,
-        abs=100.0,
-    )
-    assert controller_data.rotor_speed_rpm == pytest.approx(
+    # Controller and protection run at 10 ms and 5 ms respectively. Each
+    # therefore consumes the validated sample held at its own release.
+    assert limiter_data.rotor_speed_rpm == pytest.approx(
         snapshot.validated_rotor_speed_rpm
     )
+    assert controller_data.rotor_speed_rpm > true_speed_before_step_rpm + 250.0
     assert controller_data.rotor_speed_rpm != pytest.approx(
+        true_speed_before_step_rpm
+    )
+    assert limiter_data.rotor_speed_rpm != pytest.approx(
         true_speed_before_step_rpm
     )
 

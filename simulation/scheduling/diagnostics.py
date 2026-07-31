@@ -12,12 +12,16 @@ class TaskDiagnostics:
 
     task_name: str
     enabled: bool
+    period_ticks: int
+    phase_offset_ticks: int
+    priority: int
     release_count: int
     execution_count: int
     last_release_tick: int | None
     last_execution_tick: int | None
     next_release_tick: int
     last_execution_simulation_time_s: float | None
+    next_release_simulation_time_s: float
     effective_period_s: float
     missed_release_count: int
     skipped_execution_count: int
@@ -35,4 +39,3 @@ class SchedulerDiagnostics:
     last_tick_execution_order: tuple[str, ...]
     total_missed_release_count: int
     tasks: tuple[TaskDiagnostics, ...]
-

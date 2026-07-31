@@ -14,7 +14,7 @@ from simulation.validation.sensor_validation import (
 )
 
 
-TELEMETRY_SCHEMA_VERSION = "1.0"
+TELEMETRY_SCHEMA_VERSION = "1.1"
 
 FaultParameterValue: TypeAlias = float | str | bool | None
 FaultParameters: TypeAlias = tuple[tuple[str, FaultParameterValue], ...]
@@ -105,3 +105,15 @@ class SimulationSnapshot:
 
     rotor_speed_sensor_sample_period_s: float
     exhaust_temperature_sensor_sample_period_s: float
+
+    scheduler_schema_version: str
+    scheduler_preset: str
+    scheduler_tick: int
+    scheduler_base_tick_s: float
+    scheduler_tasks_executed_current_tick: tuple[str, ...]
+    scheduler_missed_release_count: int
+    sensor_execution_count: int
+    validation_execution_count: int
+    controller_execution_count: int
+    protection_execution_count: int
+    state_machine_execution_count: int

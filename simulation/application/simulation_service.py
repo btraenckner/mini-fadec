@@ -4,6 +4,17 @@ from pathlib import Path
 
 from simulation.application.engine_simulation import EngineSimulationCoordinator
 from simulation.operation.state_machine import EngineOperationRequest
+from simulation.operation.engine_state import EngineOperatingState
+from simulation.scheduling.config import (
+    SchedulerConfig,
+    SchedulingMode,
+    seconds_to_ticks,
+)
+from simulation.scheduling.diagnostics import (
+    SCHEDULER_SCHEMA_VERSION,
+    SchedulerDiagnostics,
+)
+from simulation.scheduling.presets import get_scheduler_preset
 from simulation.sensors.fault_injection import (
     SensorChannel,
     SensorFaultDefinition,
@@ -31,14 +42,28 @@ class SimulationService:
         self,
         coordinator: EngineSimulationCoordinator | None = None,
         recorder: RunRecorder | None = None,
+        scheduler_config: SchedulerConfig | None = None,
+        scheduling_mode: SchedulingMode = SchedulingMode.UNPACED,
         *,
         time_step_s: float = 0.01,
     ) -> None:
+        if coordinator is not None and scheduler_config is not None:
+            raise ValueError(
+                "provide scheduler_config only when constructing the coordinator"
+            )
         if time_step_s <= 0.0:
             raise ValueError("time_step_s must be greater than zero")
-        self.coordinator = coordinator or EngineSimulationCoordinator()
+        self.coordinator = coordinator or EngineSimulationCoordinator(
+            scheduler_config=scheduler_config
+        )
+        seconds_to_ticks(
+            time_step_s,
+            self.coordinator.scheduler_config.base_tick_s,
+            field_name="time_step_s",
+        )
         self.recorder = recorder or RunRecorder()
         self.time_step_s = time_step_s
+        self.scheduling_mode = scheduling_mode
 
         self._throttle_demand = 0.0
         self._startup_requested = False
@@ -46,7 +71,7 @@ class SimulationService:
         self._fault_requested = False
         self._reset_requested = False
 
-        self.coordinator.add_snapshot_sink(self.recorder)
+        self.coordinator.add_telemetry_sink(self.recorder)
         self.coordinator.event_log.add_sink(self.recorder)
 
     def request_start(self) -> None:
@@ -126,11 +151,105 @@ class SimulationService:
         return self.coordinator.describe_sensor_fault(channel)
 
     def step(self, time_step_s: float | None = None) -> SimulationSnapshot:
-        """Advance one deterministic step and consume queued one-shot commands."""
+        """Advance an exact scheduler duration and consume queued commands."""
 
         step_size_s = self.time_step_s if time_step_s is None else time_step_s
         request = self._consume_operation_request()
         return self.coordinator.step(request=request, time_step_s=step_size_s)
+
+    def step_one_tick(self) -> SimulationSnapshot:
+        """Advance exactly one scheduler base tick through the shared path."""
+
+        self.coordinator.submit_request(self._consume_operation_request())
+        return self.coordinator.step_one_tick()
+
+    @property
+    def base_tick_s(self) -> float:
+        """Return the central scheduler base tick."""
+
+        return self.coordinator.scheduler_config.base_tick_s
+
+    @property
+    def current_simulation_time_s(self) -> float:
+        """Return authoritative logical time independent of snapshot rate."""
+
+        return self.coordinator.scheduler.current_time_s
+
+    def get_scheduler_diagnostics(self) -> SchedulerDiagnostics:
+        """Return immutable full timing diagnostics for application clients."""
+
+        return self.coordinator.scheduler_diagnostics()
+
+    def select_scheduler_preset(self, preset_name: str) -> SchedulerConfig:
+        """Select a preset only while stopped, resetting all retained state."""
+
+        try:
+            selected_config = get_scheduler_preset(preset_name)
+        except KeyError:
+            self._emit_scheduler_rejection(
+                f"Unknown scheduler preset: {preset_name}"
+            )
+            raise
+        if (
+            selected_config.preset_name
+            == self.coordinator.scheduler_config.preset_name
+        ):
+            return selected_config
+        if self.recorder.is_recording:
+            message = (
+                "scheduler preset cannot change while recording is active"
+            )
+            self._emit_scheduler_rejection(message)
+            raise RuntimeError(message)
+        if self.coordinator.snapshot.operating_state is not EngineOperatingState.OFF:
+            message = "scheduler preset can change only while the engine is OFF"
+            self._emit_scheduler_rejection(message)
+            raise RuntimeError(message)
+        previous_preset = self.coordinator.scheduler_config.preset_name
+        self.coordinator.stop_scheduler()
+        self.coordinator = EngineSimulationCoordinator(
+            scheduler_config=selected_config
+        )
+        self.coordinator.add_telemetry_sink(self.recorder)
+        self.coordinator.event_log.add_sink(self.recorder)
+        self._throttle_demand = 0.0
+        self._startup_requested = False
+        self._shutdown_requested = False
+        self._fault_requested = False
+        self._reset_requested = False
+        self.coordinator.event_log.emit(
+            0.0,
+            EventCategory.SYSTEM,
+            EventType.SCHEDULER_PRESET_SELECTED,
+            EventSeverity.INFO,
+            "scheduler",
+            f"Scheduler preset selected: {selected_config.preset_name}",
+            old_value=previous_preset,
+            new_value=selected_config.preset_name,
+        )
+        self.coordinator.event_log.emit(
+            0.0,
+            EventCategory.SYSTEM,
+            EventType.SCHEDULER_RESET,
+            EventSeverity.INFO,
+            "scheduler",
+            "Scheduler timing and retained application state reset",
+            new_value=selected_config.preset_name,
+        )
+        return selected_config
+
+    def _emit_scheduler_rejection(self, message: str) -> None:
+        """Record an immutable timing-change rejection before raising."""
+
+        self.coordinator.event_log.emit(
+            self.current_simulation_time_s,
+            EventCategory.SYSTEM,
+            EventType.SCHEDULER_CONFIGURATION_REJECTED,
+            EventSeverity.WARNING,
+            "scheduler",
+            message,
+            old_value=self.coordinator.scheduler_config.preset_name,
+        )
 
     def apply_request(self, request: EngineOperationRequest) -> None:
         """Translate an existing application request into service commands."""
@@ -246,6 +365,7 @@ class SimulationService:
     def close(self, *, completed: bool = False) -> None:
         """Finalize any active recording during application cleanup."""
 
+        self.coordinator.stop_scheduler()
         self.stop_recording(completed=completed)
 
     def _consume_operation_request(self) -> EngineOperationRequest:
@@ -332,6 +452,27 @@ class SimulationService:
             protection_manager_identifier=type(
                 self.coordinator.protection_manager
             ).__name__,
+            scheduler_schema_version=SCHEDULER_SCHEMA_VERSION,
+            scheduler_preset=(
+                self.coordinator.scheduler_config.preset_name
+            ),
+            scheduler_base_tick_s=(
+                self.coordinator.scheduler_config.base_tick_s
+            ),
+            scheduler_task_definitions=tuple(
+                (
+                    task.name,
+                    task.period_ticks,
+                    task.phase_offset_ticks,
+                    task.priority,
+                    task.enabled,
+                )
+                for task in self.coordinator.scheduler_config.tasks
+            ),
+            scheduler_execution_convention=(
+                self.coordinator.scheduler_config.execution_convention.value
+            ),
+            simulation_scheduling_mode=self.scheduling_mode.value,
             configuration_summary=configuration_summary,
             repository_root=Path(__file__).resolve().parents[2],
         )

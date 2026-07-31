@@ -152,7 +152,7 @@ class RunRecorder:
         return run_directory
 
     def publish(self, snapshot: SimulationSnapshot) -> None:
-        """Record a snapshot only when its simulation-time deadline is due."""
+        """Compatibility sampling path for unscheduled snapshot publishers."""
 
         if not self.is_recording:
             return
@@ -179,6 +179,16 @@ class RunRecorder:
         self._next_sample_time_s += (
             periods_elapsed * self.parameters.telemetry_sampling_period_s
         )
+
+    def publish_scheduled(self, snapshot: SimulationSnapshot) -> None:
+        """Record one unique row released by the central telemetry task."""
+
+        if not self.is_recording:
+            return
+        self._last_simulation_time_s = snapshot.simulation_time_s
+        if snapshot.snapshot_sequence_number == self._last_snapshot_sequence:
+            return
+        self._write_snapshot(snapshot)
 
     def record_event(self, event: SimulationEvent) -> None:
         """Write one structured event while recording is active."""

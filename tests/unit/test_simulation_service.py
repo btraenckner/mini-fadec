@@ -38,10 +38,12 @@ def test_service_queues_commands_and_exposes_one_canonical_snapshot() -> None:
     first = service.step()
     second = service.step()
 
-    assert first.snapshot_sequence_number == initial.snapshot_sequence_number + 1
-    assert first.startup_requested
+    assert first.snapshot_sequence_number == initial.snapshot_sequence_number + 2
+    assert first.operating_state.value == "CRANKING"
+    assert first.starter_commanded
     assert first.throttle_demand == pytest.approx(1.0)
     assert second.startup_requested is False
+    assert second.snapshot_sequence_number == first.snapshot_sequence_number + 2
     assert service.get_latest_snapshot() is second
     assert {event.event_type for event in service.get_recent_events()} >= {
         EventType.STARTUP_REQUESTED,
@@ -97,3 +99,38 @@ def test_service_rejects_invalid_time_step() -> None:
             coordinator=EngineSimulationCoordinator(),
             time_step_s=0.0,
         )
+
+
+def test_service_selects_preset_only_while_off_and_resets_timing() -> None:
+    service = _service()
+    service.step_one_tick()
+
+    selected = service.select_scheduler_preset("slow-controller")
+
+    assert selected.preset_name == "slow-controller"
+    assert service.current_simulation_time_s == pytest.approx(0.0)
+    assert service.get_scheduler_diagnostics().current_tick == 0
+    assert {
+        event.event_type for event in service.get_recent_events()
+    }.issuperset(
+        {
+            EventType.SCHEDULER_PRESET_SELECTED,
+            EventType.SCHEDULER_RESET,
+        }
+    )
+
+
+def test_service_rejects_preset_change_during_active_engine_run() -> None:
+    service = _service()
+    service.request_start()
+    service.step()
+
+    with pytest.raises(RuntimeError, match="engine is OFF"):
+        service.select_scheduler_preset("slow-controller")
+
+    assert service.coordinator.scheduler_config.preset_name == (
+        "nominal-multirate"
+    )
+    assert EventType.SCHEDULER_CONFIGURATION_REJECTED in {
+        event.event_type for event in service.get_recent_events()
+    }

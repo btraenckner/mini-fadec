@@ -150,7 +150,7 @@ def test_status_displays_raw_validated_and_health_telemetry() -> None:
     assert "EGT: truth=" in status_text
     assert "Sensor health=VALID" in status_text
     assert "automatic FAULT=False" in status_text
-    assert "sample periods=0.010/0.020 s" in status_text
+    assert "sample periods=0.005/0.005 s" in status_text
     assert "Protection: active=HARD_CUTOFF" in status_text
     assert "limits EGT/acceleration/overspeed=" in status_text
     assert "deceleration minimum=" in status_text

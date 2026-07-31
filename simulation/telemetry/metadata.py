@@ -12,7 +12,7 @@ from simulation.telemetry.events import EVENT_SCHEMA_VERSION
 from simulation.telemetry.snapshot import TELEMETRY_SCHEMA_VERSION
 
 
-METADATA_SCHEMA_VERSION = "1.0"
+METADATA_SCHEMA_VERSION = "1.1"
 
 ConfigurationValue: TypeAlias = str | int | float | bool | None
 
@@ -35,6 +35,14 @@ class RunMetadataContext:
     engine_model_identifier: str
     controller_identifier: str
     protection_manager_identifier: str
+    scheduler_schema_version: str = "unavailable"
+    scheduler_preset: str = "unavailable"
+    scheduler_base_tick_s: float | None = None
+    scheduler_task_definitions: tuple[
+        tuple[str, int, int, int, bool], ...
+    ] = ()
+    scheduler_execution_convention: str = "unavailable"
+    simulation_scheduling_mode: str = "UNPACED"
     configuration_identifier: str = "default"
     configuration_summary: tuple[tuple[str, ConfigurationValue], ...] = ()
     repository_root: Path | None = None
@@ -92,6 +100,29 @@ def build_run_metadata(
         "protection_manager_identifier": (
             context.protection_manager_identifier
         ),
+        "scheduler_schema_version": context.scheduler_schema_version,
+        "scheduler_preset": context.scheduler_preset,
+        "scheduler_base_tick_s": context.scheduler_base_tick_s,
+        "scheduler_task_definitions": [
+            {
+                "name": name,
+                "period_ticks": period_ticks,
+                "phase_offset_ticks": phase_offset_ticks,
+                "priority": priority,
+                "enabled": enabled,
+            }
+            for (
+                name,
+                period_ticks,
+                phase_offset_ticks,
+                priority,
+                enabled,
+            ) in context.scheduler_task_definitions
+        ],
+        "scheduler_execution_convention": (
+            context.scheduler_execution_convention
+        ),
+        "simulation_scheduling_mode": context.simulation_scheduling_mode,
         "configuration_identifier": context.configuration_identifier,
         "configuration_summary": dict(context.configuration_summary),
         "git_commit": git_metadata.commit,

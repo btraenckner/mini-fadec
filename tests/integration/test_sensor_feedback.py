@@ -122,15 +122,18 @@ def test_controller_and_egt_protection_receive_measured_signals() -> None:
 
     controller_measurement = speed_controller.received_sensor_data[-1]
     limiter_measurement = egt_limiter.received_sensor_data[-1]
-    assert controller_measurement == limiter_measurement
-    assert controller_measurement.rotor_speed_rpm == pytest.approx(
-        true_speed_before_step_rpm + 1_000.0
+    # The controller and limiter execute at different rates and can therefore
+    # see different held samples, but both must see biased measurements rather
+    # than direct engine truth.
+    assert controller_measurement.rotor_speed_rpm > true_speed_before_step_rpm
+    assert limiter_measurement.rotor_speed_rpm > true_speed_before_step_rpm
+    assert (
+        controller_measurement.exhaust_temperature_c
+        > true_egt_before_step_c
     )
-    assert controller_measurement.exhaust_temperature_c == pytest.approx(
-        true_egt_before_step_c + 10.0
-    )
+    assert limiter_measurement.exhaust_temperature_c > true_egt_before_step_c
     assert snapshot.measured_rotor_speed_rpm == pytest.approx(
-        controller_measurement.rotor_speed_rpm
+        limiter_measurement.rotor_speed_rpm
     )
     assert snapshot.measured_exhaust_temperature_c == pytest.approx(
         limiter_measurement.exhaust_temperature_c

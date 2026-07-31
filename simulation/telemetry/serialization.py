@@ -81,6 +81,17 @@ TELEMETRY_FIELDS = (
     "fuel_cutoff_due_to_sensor_invalidity",
     "rotor_speed_sensor_sample_period_s",
     "exhaust_temperature_sensor_sample_period_s",
+    "scheduler_schema_version",
+    "scheduler_preset",
+    "scheduler_tick",
+    "scheduler_base_tick_s",
+    "scheduler_tasks_executed_current_tick",
+    "scheduler_missed_release_count",
+    "sensor_execution_count",
+    "validation_execution_count",
+    "controller_execution_count",
+    "protection_execution_count",
+    "state_machine_execution_count",
 )
 
 
