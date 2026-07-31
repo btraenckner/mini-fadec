@@ -344,9 +344,10 @@ back to manual mode.
 
 The dashboard timing overlay displays the active preset, base tick, current
 logical time and tick, missed releases, and the complete per-task timing
-table. Its preset selector is enabled only while execution is stopped. The
-overlay refreshes at the UI rate and is strictly observational; it never
-releases control or plant tasks.
+table. It is read-only: preset definitions are maintained in
+`simulation/scheduling/presets.py`, while scenarios select presets through
+their configuration overrides. The overlay refreshes at the UI rate and is
+strictly observational; it never releases control or plant tasks.
 
 ### Telemetry and event schemas
 

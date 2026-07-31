@@ -135,7 +135,7 @@ def test_dashboard_uses_grouped_dark_theme_and_live_status_indicators() -> None:
     dashboard.close(save_result=False)
 
 
-def test_dashboard_timing_panel_displays_diagnostics_and_selects_preset() -> None:
+def test_dashboard_timing_panel_displays_read_only_diagnostics() -> None:
     dashboard = LiveEngineDashboard()
 
     dashboard._on_timing_panel(None)
@@ -145,19 +145,10 @@ def test_dashboard_timing_panel_displays_diagnostics_and_selects_preset() -> Non
     assert "TASK" in dashboard._timing_table_text.get_text()
     assert "plant" in dashboard._timing_table_text.get_text()
     assert "controller" in dashboard._timing_table_text.get_text()
-
-    labels = tuple(
-        label.get_text()
-        for label in dashboard._timing_preset_selector.labels
+    assert dashboard._timing_instruction_text.get_text() == (
+        "Configure scheduler presets in simulation/scheduling/presets.py"
     )
-    dashboard._timing_preset_selector.set_active(
-        labels.index("slow-controller")
-    )
-
-    assert dashboard.dashboard_simulation.selected_scheduler_preset == (
-        "slow-controller"
-    )
-    assert "slow-controller" in dashboard._timing_summary_text.get_text()
+    assert not hasattr(dashboard, "_timing_preset_selector")
     dashboard.close(save_result=False)
 
 

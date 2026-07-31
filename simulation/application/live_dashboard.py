@@ -304,7 +304,7 @@ class LiveEngineDashboard:
         self._update_scenario_status()
 
     def _create_timing_panel(self) -> None:
-        """Create a modal scheduler diagnostics and preset-selection panel."""
+        """Create a read-only modal scheduler diagnostics panel."""
 
         panel_axis = self._figure.add_axes((0.425, 0.12, 0.55, 0.75))
         panel_axis.set_facecolor(self._PANEL_COLOR)
@@ -337,15 +337,15 @@ class LiveEngineDashboard:
         panel_axis.text(
             0.035,
             0.805,
-            "PRESET",
+            "ACTIVE TASK CONFIGURATION  /  READ ONLY",
             transform=panel_axis.transAxes,
             fontsize=7.5,
             fontweight="bold",
             color=self._MUTED_TEXT_COLOR,
         )
         self._timing_table_text = panel_axis.text(
-            0.305,
-            0.815,
+            0.035,
+            0.765,
             "",
             transform=panel_axis.transAxes,
             fontsize=6.7,
@@ -357,37 +357,10 @@ class LiveEngineDashboard:
         self._timing_instruction_text = panel_axis.text(
             0.035,
             0.045,
-            "Preset changes are accepted only while the simulation is stopped.",
+            "Configure scheduler presets in simulation/scheduling/presets.py",
             transform=panel_axis.transAxes,
             fontsize=7,
             color=self._MUTED_TEXT_COLOR,
-        )
-
-        preset_labels = (
-            self.dashboard_simulation.available_scheduler_presets()
-        )
-        selected_preset_index = preset_labels.index(
-            self.dashboard_simulation.selected_scheduler_preset
-        )
-        preset_axis = self._figure.add_axes((0.445, 0.39, 0.135, 0.30))
-        self._style_widget_axis(preset_axis)
-        preset_axis.set_zorder(31)
-        self._timing_preset_selector = RadioButtons(
-            preset_axis,
-            preset_labels,
-            active=selected_preset_index,
-            activecolor=self._ACCENT_COLOR,
-            radio_props={
-                "edgecolor": self._MUTED_TEXT_COLOR,
-                "linewidth": 0.8,
-                "s": 30.0,
-            },
-        )
-        for label in self._timing_preset_selector.labels:
-            label.set_fontsize(7.2)
-            label.set_color(self._TEXT_COLOR)
-        self._timing_preset_selector.on_clicked(
-            self._on_timing_preset_selected
         )
 
         close_button = self._create_button(
@@ -398,7 +371,6 @@ class LiveEngineDashboard:
         )
         close_button.ax.set_zorder(31)
         self._timing_panel_axis = panel_axis
-        self._timing_preset_axis = preset_axis
         self._timing_close_button = close_button
         self._timing_panel_visible = False
         self._set_timing_panel_visible(False)
@@ -1376,48 +1348,11 @@ class LiveEngineDashboard:
         self._update_timing_panel()
         self._figure.canvas.draw_idle()
 
-    def _on_timing_preset_selected(self, preset_name: str) -> None:
-        """Select an immutable scheduler preset while execution is stopped."""
-
-        if getattr(self, "_timing_selection_callback_active", False):
-            return
-        try:
-            selected_preset = (
-                self.dashboard_simulation.select_scheduler_preset(
-                    preset_name
-                )
-            )
-        except (KeyError, RuntimeError) as error:
-            self._set_scenario_feedback(str(error), self._WARNING_COLOR)
-            self._restore_timing_preset_selection()
-            return
-        self._set_scenario_feedback(
-            f"Scheduler preset selected  /  {selected_preset}",
-            self._ACCENT_COLOR,
-        )
-        self._update_timing_panel()
-        self._figure.canvas.draw_idle()
-
-    def _restore_timing_preset_selection(self) -> None:
-        """Restore the radio selection after a rejected timing change."""
-
-        labels = tuple(
-            label.get_text()
-            for label in self._timing_preset_selector.labels
-        )
-        selected_index = labels.index(
-            self.dashboard_simulation.selected_scheduler_preset
-        )
-        self._timing_selection_callback_active = True
-        self._timing_preset_selector.set_active(selected_index)
-        self._timing_selection_callback_active = False
-
     def _set_timing_panel_visible(self, visible: bool) -> None:
         """Show or hide every axis belonging to the timing overlay."""
 
         self._timing_panel_visible = visible
         self._timing_panel_axis.set_visible(visible)
-        self._timing_preset_axis.set_visible(visible)
         self._timing_close_button.ax.set_visible(visible)
         self._timing_panel_button.label.set_text(
             "TIMING ▲" if visible else "TIMING"
@@ -1454,24 +1389,6 @@ class LiveEngineDashboard:
                 f"{task.missed_release_count:4d}"
             )
         self._timing_table_text.set_text("\n".join(table_lines))
-
-        snapshot = self.dashboard_simulation.get_latest_snapshot()
-        preset_change_allowed = (
-            not self.dashboard_simulation.scenario_is_running
-            and (
-                self.dashboard_simulation.scenario_mode_active
-                or snapshot.operating_state is EngineOperatingState.OFF
-            )
-        )
-        self._timing_preset_selector.active = preset_change_allowed
-        self._timing_preset_axis.set_alpha(
-            1.0 if preset_change_allowed else 0.35
-        )
-        self._timing_instruction_text.set_color(
-            self._MUTED_TEXT_COLOR
-            if preset_change_allowed
-            else self._WARNING_COLOR
-        )
 
     def _on_scenario_selected(self, scenario_label: str) -> None:
         """Select one scenario from the runner-mode dropdown."""
