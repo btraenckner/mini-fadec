@@ -1,5 +1,7 @@
 """Explicit deterministic regression-scenario library."""
 
+from dataclasses import replace
+
 from simulation.operation.engine_state import EngineOperatingState
 from simulation.protection.types import ProtectionLimiter
 from simulation.scenarios.actions import (
@@ -24,6 +26,7 @@ from simulation.sensors.fault_injection import (
     SensorChannel,
 )
 from simulation.telemetry.events import EventType
+from simulation.scheduling.presets import get_scheduler_preset
 from simulation.validation.sensor_validation import ChannelHealth
 from simulation.verification.evaluators import (
     AccelerationLimitRequirementEvaluator,
@@ -33,14 +36,19 @@ from simulation.verification.evaluators import (
     EventObservedRequirementEvaluator,
     FaultResponseTimeRequirementEvaluator,
     FuelCutoffResponseRequirementEvaluator,
+    DeterministicTaskOrderRequirementEvaluator,
     NoTruthFallbackRequirementEvaluator,
+    NoMissedSchedulerReleaseRequirementEvaluator,
     NumericSignal,
     OvershootRequirementEvaluator,
     ProtectionLimiterObservedRequirementEvaluator,
     SensorHealthReachedRequirementEvaluator,
+    SchedulerPresetRequirementEvaluator,
     SettlingTimeRequirementEvaluator,
     StateReachedWithinRequirementEvaluator,
     StateSequenceRequirementEvaluator,
+    TaskExecutionCountRequirementEvaluator,
+    TaskExecutionRatioRequirementEvaluator,
 )
 from simulation.verification.requirements import (
     Requirement,
@@ -74,6 +82,59 @@ def _common_fuel_requirements(prefix: str) -> tuple[Requirement, ...]:
             ActuatorInvariantRequirementEvaluator(
                 ActuatorInvariant.FUEL_BOUNDED
             ),
+            RequirementCriticality.CRITICAL,
+        ),
+    )
+
+
+def _scheduler_requirements(
+    prefix: str,
+    preset_name: str,
+) -> tuple[Requirement, ...]:
+    config = get_scheduler_preset(preset_name)
+    sensor_task = config.task("sensor")
+    controller_task = config.task("controller")
+    return (
+        _requirement(
+            f"{prefix}-PRESET",
+            f"The scenario shall use the {preset_name} scheduler preset.",
+            RequirementCategory.SCHEDULER_TIMING,
+            SchedulerPresetRequirementEvaluator(preset_name),
+            RequirementCriticality.CRITICAL,
+        ),
+        _requirement(
+            f"{prefix}-NO-MISSED-RELEASES",
+            "No logical scheduler release shall be missed.",
+            RequirementCategory.SCHEDULER_TIMING,
+            NoMissedSchedulerReleaseRequirementEvaluator(),
+            RequirementCriticality.CRITICAL,
+        ),
+        _requirement(
+            f"{prefix}-SENSOR-COUNT",
+            "Sensor executions shall match their exact integer release count.",
+            RequirementCategory.SCHEDULER_TIMING,
+            TaskExecutionCountRequirementEvaluator(
+                "sensor",
+                sensor_task.period_ticks,
+                sensor_task.phase_offset_ticks,
+            ),
+        ),
+        _requirement(
+            f"{prefix}-CONTROL-SENSOR-RATIO",
+            "Controller and sensor counts shall match configured task rates.",
+            RequirementCategory.SCHEDULER_TIMING,
+            TaskExecutionRatioRequirementEvaluator(
+                "controller",
+                controller_task.period_ticks,
+                "sensor",
+                sensor_task.period_ticks,
+            ),
+        ),
+        _requirement(
+            f"{prefix}-ORDER",
+            "Same-tick tasks shall follow explicit deterministic priority.",
+            RequirementCategory.SCHEDULER_TIMING,
+            DeterministicTaskOrderRequirementEvaluator(),
             RequirementCriticality.CRITICAL,
         ),
     )
@@ -721,6 +782,168 @@ def hard_overspeed_scenario() -> Scenario:
     )
 
 
+def _scheduled_scenario(
+    source: Scenario,
+    *,
+    scenario_id: str,
+    name: str,
+    description: str,
+    preset_name: str,
+    experimental: bool = False,
+    additional_requirements: tuple[Requirement, ...] = (),
+) -> Scenario:
+    """Create an explicit timing variant without mutating its source."""
+
+    overrides = dict(source.configuration_overrides)
+    overrides["scheduler_preset"] = preset_name
+    classification = "experimental" if experimental else "regression"
+    return replace(
+        source,
+        scenario_id=scenario_id,
+        name=name,
+        description=description,
+        requirements=(
+            source.requirements
+            + _scheduler_requirements(
+                f"REQ-{scenario_id.removeprefix('SCN-')}",
+                preset_name,
+            )
+            + additional_requirements
+        ),
+        tags=tuple(
+            dict.fromkeys(
+                (
+                    *(
+                        tag
+                        for tag in source.tags
+                        if not experimental or tag != "regression"
+                    ),
+                    "scheduler",
+                    "multirate",
+                    classification,
+                )
+            )
+        ),
+        recording=replace(
+            source.recording,
+            run_name=f"scenario_{name}",
+        ),
+        configuration_overrides=tuple(overrides.items()),
+    )
+
+
+def single_rate_reference_lifecycle_scenario() -> Scenario:
+    """Return the single-rate behavioral reference lifecycle."""
+
+    return _scheduled_scenario(
+        normal_lifecycle_scenario(),
+        scenario_id="SCN-SCHED-001",
+        name="single_rate_reference_lifecycle",
+        description=(
+            "Normal lifecycle under the mandatory single-rate reference preset."
+        ),
+        preset_name="single-rate",
+    )
+
+
+def nominal_multirate_lifecycle_scenario() -> Scenario:
+    """Return the nominal multi-rate lifecycle regression."""
+
+    return _scheduled_scenario(
+        normal_lifecycle_scenario(),
+        scenario_id="SCN-SCHED-002",
+        name="nominal_multirate_lifecycle",
+        description=(
+            "Normal lifecycle under the nominal deterministic multi-rate preset."
+        ),
+        preset_name="nominal-multirate",
+    )
+
+
+def nominal_multirate_throttle_transient_scenario() -> Scenario:
+    """Return the nominal large-throttle multi-rate transient."""
+
+    return _scheduled_scenario(
+        large_throttle_step_scenario(),
+        scenario_id="SCN-SCHED-003",
+        name="nominal_multirate_throttle_transient",
+        description=(
+            "Large throttle transient under nominal multi-rate scheduling."
+        ),
+        preset_name="nominal-multirate",
+    )
+
+
+def nominal_multirate_sensor_fault_scenario() -> Scenario:
+    """Return the nominal RPM-dropout timing-response regression."""
+
+    response_bound_s = 0.040
+    derived_bound = _requirement(
+        "REQ-SCHED-004-DERIVED-FAULT-BOUND",
+        (
+            "RPM dropout shall reach FAULT within the 40 ms derived "
+            "multi-rate response bound."
+        ),
+        RequirementCategory.SCHEDULER_TIMING,
+        FaultResponseTimeRequirementEvaluator(
+            "inject_dropout",
+            maximum_response_time_s=response_bound_s,
+            required_health=ChannelHealth.INVALID,
+            health_signal="rotor_speed",
+        ),
+        RequirementCriticality.CRITICAL,
+    )
+    return _scheduled_scenario(
+        rpm_sensor_dropout_scenario(),
+        scenario_id="SCN-SCHED-004",
+        name="nominal_multirate_rpm_dropout",
+        description=(
+            "RPM dropout response under nominal scheduling. The 40 ms bound "
+            "is 5 ms sensor delay + 5 ms validation delay + 5 ms protection "
+            "delay + 20 ms state-machine delay + 5 ms tolerance."
+        ),
+        preset_name="nominal-multirate",
+        additional_requirements=(derived_bound,),
+    )
+
+
+def slow_controller_sensitivity_scenario() -> Scenario:
+    """Return the explicitly experimental slow-controller transient."""
+
+    return _scheduled_scenario(
+        large_throttle_step_scenario(),
+        scenario_id="SCN-SCHED-005",
+        name="slow_controller_sensitivity",
+        description=(
+            "Experimental stability and settling sensitivity with a 50 ms "
+            "controller period; requirements intentionally remain unchanged."
+        ),
+        preset_name="slow-controller",
+        experimental=True,
+    )
+
+
+def slow_sensor_sensitivity_scenario() -> Scenario:
+    """Return the explicitly experimental slow-sensor fault response."""
+
+    scenario = _scheduled_scenario(
+        rpm_sensor_dropout_scenario(),
+        scenario_id="SCN-SCHED-006",
+        name="slow_sensor_sensitivity",
+        description=(
+            "Experimental dropout and stale-data sensitivity with 20 ms "
+            "sensor and validation periods. The unchanged 10 ms cutoff "
+            "requirement is expected to fail and demonstrate degraded latency."
+        ),
+        preset_name="slow-sensors",
+        experimental=True,
+    )
+    return replace(
+        scenario,
+        tags=(*scenario.tags, "expected-failure"),
+    )
+
+
 REGRESSION_SCENARIOS = (
     normal_lifecycle_scenario(),
     large_throttle_step_scenario(),
@@ -729,20 +952,35 @@ REGRESSION_SCENARIOS = (
     egt_sensor_dropout_scenario(),
     soft_overspeed_scenario(),
     hard_overspeed_scenario(),
+    single_rate_reference_lifecycle_scenario(),
+    nominal_multirate_lifecycle_scenario(),
+    nominal_multirate_throttle_transient_scenario(),
+    nominal_multirate_sensor_fault_scenario(),
+)
+
+EXPERIMENTAL_SCENARIOS = (
+    slow_controller_sensitivity_scenario(),
+    slow_sensor_sensitivity_scenario(),
 )
 
 
 def list_scenarios() -> tuple[Scenario, ...]:
-    """Return the explicit registry in deterministic execution order."""
+    """Return mandatory regression scenarios in deterministic order."""
 
     return REGRESSION_SCENARIOS
+
+
+def list_all_scenarios() -> tuple[Scenario, ...]:
+    """Return mandatory and explicitly experimental scenarios."""
+
+    return REGRESSION_SCENARIOS + EXPERIMENTAL_SCENARIOS
 
 
 def get_scenario(identifier: str) -> Scenario:
     """Look up one scenario by stable ID or human-readable name."""
 
     normalized = identifier.strip().lower()
-    for scenario in REGRESSION_SCENARIOS:
+    for scenario in list_all_scenarios():
         if normalized in {scenario.scenario_id.lower(), scenario.name.lower()}:
             return scenario
     raise KeyError(f"unknown scenario: {identifier}")

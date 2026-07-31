@@ -6,6 +6,7 @@ from enum import Enum
 
 from simulation.operation.engine_state import EngineOperatingState
 from simulation.protection.types import ProtectionLimiter
+from simulation.scheduling.presets import TASK_PRIORITIES
 from simulation.sensors.fault_injection import SensorChannel
 from simulation.telemetry.events import EventType
 from simulation.telemetry.snapshot import SimulationSnapshot
@@ -886,6 +887,244 @@ class NoTruthFallbackRequirementEvaluator:
             ),
             "No engine-truth fallback was observed",
         )
+
+
+@dataclass(frozen=True)
+class NoMissedSchedulerReleaseRequirementEvaluator:
+    """Verify that every captured logical release was processed."""
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        if not context.snapshots:
+            return _not_evaluated("no snapshots were captured")
+        maximum_missed = max(
+            snapshot.scheduler_missed_release_count
+            for snapshot in context.snapshots
+        )
+        passed = maximum_missed == 0
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=maximum_missed,
+                expected_value=0,
+            ),
+            (
+                "No logical task releases were missed"
+                if passed
+                else f"{maximum_missed} logical task releases were missed"
+            ),
+            None if passed else "SCHEDULER_RELEASE_MISSED",
+        )
+
+
+@dataclass(frozen=True)
+class SchedulerPresetRequirementEvaluator:
+    """Verify that all captured snapshots use the intended timing preset."""
+
+    expected_preset: str
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        observed = tuple(
+            dict.fromkeys(
+                snapshot.scheduler_preset for snapshot in context.snapshots
+            )
+        )
+        passed = observed == (self.expected_preset,)
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=", ".join(observed),
+                expected_value=self.expected_preset,
+            ),
+            (
+                f"Scheduler preset matched {self.expected_preset}"
+                if passed
+                else "Unexpected scheduler preset was observed"
+            ),
+            None if passed else "SCHEDULER_PRESET_MISMATCH",
+        )
+
+
+_TASK_EXECUTION_COUNT_FIELDS = {
+    "sensor": "sensor_execution_count",
+    "validation": "validation_execution_count",
+    "controller": "controller_execution_count",
+    "protection": "protection_execution_count",
+    "state_machine": "state_machine_execution_count",
+}
+
+
+@dataclass(frozen=True)
+class TaskExecutionCountRequirementEvaluator:
+    """Check an exact tick-derived task execution count at the final snapshot."""
+
+    task_name: str
+    period_ticks: int
+    phase_offset_ticks: int = 0
+
+    def __post_init__(self) -> None:
+        if self.task_name not in _TASK_EXECUTION_COUNT_FIELDS:
+            raise ValueError(f"unsupported task count: {self.task_name}")
+        if self.period_ticks <= 0:
+            raise ValueError("period_ticks must be greater than zero")
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        if not context.snapshots:
+            return _not_evaluated("no snapshots were captured")
+        snapshot = context.snapshots[-1]
+        measured = int(
+            getattr(
+                snapshot,
+                _TASK_EXECUTION_COUNT_FIELDS[self.task_name],
+            )
+        )
+        expected = _expected_release_count(
+            snapshot.scheduler_tick,
+            self.period_ticks,
+            self.phase_offset_ticks,
+        )
+        passed = measured == expected
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=measured,
+                expected_value=expected,
+                evaluation_time_s=snapshot.simulation_time_s,
+                diagnostic_message=(
+                    f"task={self.task_name}, tick={snapshot.scheduler_tick}, "
+                    f"period_ticks={self.period_ticks}, "
+                    f"phase_ticks={self.phase_offset_ticks}"
+                ),
+            ),
+            (
+                f"{self.task_name} executed exactly {measured} times"
+                if passed
+                else (
+                    f"{self.task_name} executed {measured} times; "
+                    f"expected {expected}"
+                )
+            ),
+            None if passed else "TASK_EXECUTION_COUNT_MISMATCH",
+        )
+
+
+@dataclass(frozen=True)
+class TaskExecutionRatioRequirementEvaluator:
+    """Verify two task counts match their exact integer release contracts."""
+
+    numerator_task: str
+    numerator_period_ticks: int
+    denominator_task: str
+    denominator_period_ticks: int
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        if not context.snapshots:
+            return _not_evaluated("no snapshots were captured")
+        snapshot = context.snapshots[-1]
+        numerator = _task_execution_count(snapshot, self.numerator_task)
+        denominator = _task_execution_count(snapshot, self.denominator_task)
+        expected_numerator = _expected_release_count(
+            snapshot.scheduler_tick,
+            self.numerator_period_ticks,
+            0,
+        )
+        expected_denominator = _expected_release_count(
+            snapshot.scheduler_tick,
+            self.denominator_period_ticks,
+            0,
+        )
+        passed = (
+            numerator == expected_numerator
+            and denominator == expected_denominator
+        )
+        measured = f"{numerator}:{denominator}"
+        expected = f"{expected_numerator}:{expected_denominator}"
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=measured,
+                expected_value=expected,
+                evaluation_time_s=snapshot.simulation_time_s,
+                diagnostic_message=(
+                    f"{self.numerator_task}:{self.denominator_task}"
+                ),
+            ),
+            (
+                f"Task execution ratio matched exact counts {expected}"
+                if passed
+                else f"Task execution ratio {measured}; expected {expected}"
+            ),
+            None if passed else "TASK_EXECUTION_RATIO_MISMATCH",
+        )
+
+
+@dataclass(frozen=True)
+class DeterministicTaskOrderRequirementEvaluator:
+    """Verify every published same-tick task list follows explicit priority."""
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        violation = next(
+            (
+                snapshot
+                for snapshot in context.snapshots
+                if snapshot.scheduler_tasks_executed_current_tick
+                != tuple(
+                    sorted(
+                        snapshot.scheduler_tasks_executed_current_tick,
+                        key=lambda task_name: (
+                            TASK_PRIORITIES[task_name],
+                            task_name,
+                        ),
+                    )
+                )
+            ),
+            None,
+        )
+        passed = violation is None
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=(
+                    "priority ordered"
+                    if passed
+                    else ", ".join(
+                        violation.scheduler_tasks_executed_current_tick
+                    )
+                ),
+                expected_value="ascending explicit task priority",
+                evaluation_time_s=(
+                    None
+                    if violation is None
+                    else violation.simulation_time_s
+                ),
+            ),
+            (
+                "Every same-tick task list followed explicit priority"
+                if passed
+                else "A same-tick task list violated explicit priority"
+            ),
+            None if passed else "TASK_EXECUTION_ORDER_MISMATCH",
+        )
+
+
+def _expected_release_count(
+    current_tick: int,
+    period_ticks: int,
+    phase_offset_ticks: int,
+) -> int:
+    if current_tick < phase_offset_ticks:
+        return 0
+    return ((current_tick - phase_offset_ticks) // period_ticks) + 1
+
+
+def _task_execution_count(
+    snapshot: SimulationSnapshot,
+    task_name: str,
+) -> int:
+    try:
+        field_name = _TASK_EXECUTION_COUNT_FIELDS[task_name]
+    except KeyError as error:
+        raise ValueError(f"unsupported task count: {task_name}") from error
+    return int(getattr(snapshot, field_name))
 
 
 def _action_time(context: EvaluationContext, action_id: str | None) -> float | None:

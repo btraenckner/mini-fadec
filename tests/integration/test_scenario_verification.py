@@ -17,11 +17,11 @@ from simulation.verification.results import ScenarioOverallStatus
 
 
 def _isolated_scenario(scenario: Scenario, base_directory: Path) -> Scenario:
+    overrides = dict(scenario.configuration_overrides)
+    overrides["artifact_base_directory"] = str(base_directory)
     return replace(
         scenario,
-        configuration_overrides=(
-            ("artifact_base_directory", str(base_directory)),
-        ),
+        configuration_overrides=tuple(overrides.items()),
     )
 
 
@@ -52,6 +52,10 @@ def test_complete_regression_scenario_library_passes(scenario_results: dict) -> 
         "egt_sensor_dropout",
         "soft_overspeed",
         "hard_overspeed",
+        "single_rate_reference_lifecycle",
+        "nominal_multirate_lifecycle",
+        "nominal_multirate_throttle_transient",
+        "nominal_multirate_rpm_dropout",
     }
     assert all(
         result.overall_status is ScenarioOverallStatus.PASS
@@ -174,10 +178,13 @@ def test_run_artifacts_match_in_memory_verification_results(
         report = result.report_path.read_text(encoding="utf-8")
 
         assert requirements["overall_result"] == result.overall_status.value
+        assert requirements["scheduler"]["preset"] == result.scheduler_preset
+        assert requirements["scheduler"]["tasks"]
         assert [
             item["status"] for item in requirements["requirement_results"]
         ] == [item.status.value for item in result.requirement_results]
         assert f"Scenario result:** {result.overall_status.value}" in report
+        assert f"Scheduler preset: {result.scheduler_preset}" in report
 
 
 def test_repeated_scenario_runs_have_equivalent_normalized_results_and_csv(

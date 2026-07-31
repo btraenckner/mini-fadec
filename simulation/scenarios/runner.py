@@ -18,6 +18,8 @@ from simulation.scenarios.actions import (
 from simulation.scenarios.conditions import ConditionContext
 from simulation.scenarios.definitions import Scenario
 from simulation.scenarios.triggers import WhenConditionTrigger
+from simulation.scheduling.presets import get_scheduler_preset
+from simulation.scheduling.diagnostics import SchedulerDiagnostics
 from simulation.sensors.fault_injection import SensorFaultInjector
 from simulation.sensors.sensor_model import (
     ConfigurableSensorModel,
@@ -66,6 +68,7 @@ class ScenarioProgress:
     recent_events: tuple[SimulationEvent, ...]
     action_results: tuple[ActionResult, ...]
     partial_requirement_status: tuple[tuple[str, RequirementStatus], ...]
+    scheduler_diagnostics: SchedulerDiagnostics
 
 
 ServiceFactory = Callable[[Scenario], SimulationService]
@@ -82,12 +85,14 @@ class ScenarioRunner:
         sleeper: Callable[[float], None] = time.sleep,
         performance_clock: Callable[[], float] = time.perf_counter,
         wall_clock: Callable[[], datetime] | None = None,
+        scheduler_preset: str | None = None,
     ) -> None:
         self._service_factory = service_factory or _default_service_factory
         self._paced = paced
         self._sleeper = sleeper
         self._performance_clock = performance_clock
         self._wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
+        self._scheduler_preset = scheduler_preset
         self._scenario: Scenario | None = None
         self._service: SimulationService | None = None
         self._execution_state = ScenarioExecutionState.NOT_STARTED
@@ -106,13 +111,22 @@ class ScenarioRunner:
 
         return self._result
 
+    @property
+    def base_tick_s(self) -> float:
+        """Return the prepared service scheduler tick."""
+
+        if self._service is None:
+            raise RuntimeError("no scenario has been prepared")
+        return self._service.base_tick_s
+
     def prepare_scenario(self, scenario: Scenario) -> ScenarioProgress:
         """Create a fresh application composition and prepare one isolated run."""
 
         if self._execution_state is ScenarioExecutionState.RUNNING:
             raise RuntimeError("a scenario is already running")
-        self._scenario = scenario
-        self._service = self._service_factory(scenario)
+        effective_scenario = self._scenario_with_scheduler_override(scenario)
+        self._scenario = effective_scenario
+        self._service = self._service_factory(effective_scenario)
         self._execution_state = ScenarioExecutionState.RUNNING
         self._action_results = {
             action.action_id: ActionResult(
@@ -157,8 +171,12 @@ class ScenarioRunner:
             self._capture_new_events()
             self._check_termination()
             if self._execution_state is ScenarioExecutionState.RUNNING:
-                snapshot = self._service.step()
-                self._snapshots.append(snapshot)
+                snapshot = self._service.step_one_tick()
+                if (
+                    snapshot.snapshot_sequence_number
+                    != self._snapshots[-1].snapshot_sequence_number
+                ):
+                    self._snapshots.append(snapshot)
                 self._capture_new_events()
                 self._evaluate_due_actions()
                 self._capture_new_events()
@@ -167,7 +185,7 @@ class ScenarioRunner:
                     self._paced
                     and self._execution_state is ScenarioExecutionState.RUNNING
                 ):
-                    self._sleeper(self._service.time_step_s)
+                    self._sleeper(self._service.base_tick_s)
         except Exception as error:
             self._fail_execution(error)
         return self.get_scenario_progress()
@@ -215,7 +233,7 @@ class ScenarioRunner:
         )
         return ScenarioProgress(
             scenario_id=self._scenario.scenario_id,
-            current_simulation_time_s=self._snapshots[-1].simulation_time_s,
+            current_simulation_time_s=self._service.current_simulation_time_s,
             maximum_duration_s=self._scenario.max_duration_s,
             execution_state=self._execution_state,
             current_engine_state=self._snapshots[-1].operating_state.value,
@@ -241,6 +259,22 @@ class ScenarioRunner:
             recent_events=tuple(self._events[-50:]),
             action_results=action_results,
             partial_requirement_status=partial,
+            scheduler_diagnostics=(
+                self._service.get_scheduler_diagnostics()
+            ),
+        )
+
+    def _scenario_with_scheduler_override(
+        self,
+        scenario: Scenario,
+    ) -> Scenario:
+        if self._scheduler_preset is None:
+            return scenario
+        overrides = dict(scenario.configuration_overrides)
+        overrides["scheduler_preset"] = self._scheduler_preset
+        return replace(
+            scenario,
+            configuration_overrides=tuple(overrides.items()),
         )
 
     def _evaluate_due_actions(self) -> None:
@@ -254,7 +288,7 @@ class ScenarioRunner:
                 current_result = self._action_results[action.action_id]
                 if current_result.status is not ActionExecutionStatus.PENDING:
                     continue
-                current_time_s = context.latest_snapshot.simulation_time_s
+                current_time_s = context.simulation_time_s
                 if self._action_timed_out(action, current_time_s):
                     self._action_results[action.action_id] = ActionResult(
                         action_id=action.action_id,
@@ -347,7 +381,8 @@ class ScenarioRunner:
         if self._execution_state is not ScenarioExecutionState.RUNNING:
             return
         assert self._scenario is not None
-        current_time_s = self._snapshots[-1].simulation_time_s
+        assert self._service is not None
+        current_time_s = self._service.current_simulation_time_s
         if current_time_s + 1.0e-12 >= self._scenario.max_duration_s:
             self._execution_state = ScenarioExecutionState.TIMED_OUT
             self._mark_pending_actions(ActionExecutionStatus.TIMED_OUT)
@@ -373,6 +408,9 @@ class ScenarioRunner:
             snapshots=tuple(self._snapshots),
             recent_events=tuple(self._events),
             action_results=self._action_results,
+            authoritative_simulation_time_s=(
+                self._service.current_simulation_time_s
+            ),
         )
 
     def _capture_new_events(self) -> None:
@@ -390,7 +428,8 @@ class ScenarioRunner:
         self._finalize_result()
 
     def _mark_pending_actions(self, status: ActionExecutionStatus) -> None:
-        current_time_s = self._snapshots[-1].simulation_time_s
+        assert self._service is not None
+        current_time_s = self._service.current_simulation_time_s
         for action_id, result in tuple(self._action_results.items()):
             if result.status is not ActionExecutionStatus.PENDING:
                 continue
@@ -448,7 +487,7 @@ class ScenarioRunner:
             snapshots=tuple(self._snapshots),
             events=tuple(self._events),
             action_results=self._action_results,
-            time_step_s=self._service.time_step_s,
+            time_step_s=self._service.base_tick_s,
         )
         requirement_results = evaluate_requirements(
             self._scenario.requirements,
@@ -466,7 +505,7 @@ class ScenarioRunner:
         start_performance_time = self._start_performance_time or end_performance_time
         wall_duration_s = max(0.0, end_performance_time - start_performance_time)
         simulation_start_s = self._snapshots[0].simulation_time_s
-        simulation_end_s = self._snapshots[-1].simulation_time_s
+        simulation_end_s = self._service.current_simulation_time_s
         simulated_duration_s = simulation_end_s - simulation_start_s
         real_time_factor = (
             simulated_duration_s / wall_duration_s
@@ -533,6 +572,25 @@ class ScenarioRunner:
             simulation_start_time_s=simulation_start_s,
             simulation_end_time_s=simulation_end_s,
             simulated_duration_s=simulated_duration_s,
+            scheduler_preset=(
+                self._service.coordinator.scheduler_config.preset_name
+            ),
+            scheduler_base_tick_s=(
+                self._service.coordinator.scheduler_config.base_tick_s
+            ),
+            scheduler_execution_convention=(
+                self._service.coordinator.scheduler_config.execution_convention.value
+            ),
+            scheduler_task_configuration=tuple(
+                (
+                    task.name,
+                    task.period_ticks,
+                    task.phase_offset_ticks,
+                    task.priority,
+                    task.enabled,
+                )
+                for task in self._service.coordinator.scheduler_config.tasks
+            ),
             wall_clock_execution_duration_s=wall_duration_s,
             real_time_factor=real_time_factor,
             final_engine_state=self._snapshots[-1].operating_state,
@@ -624,6 +682,9 @@ def run_scenario(scenario: Scenario) -> ScenarioResult:
 def _default_service_factory(scenario: Scenario) -> SimulationService:
     overrides = dict(scenario.configuration_overrides)
     time_step_s = scenario.time_step_s or 0.01
+    scheduler_config = get_scheduler_preset(
+        str(overrides.get("scheduler_preset", "nominal-multirate"))
+    )
     random_seed_value = overrides.get("sensor_random_seed", scenario.random_seed)
     random_seed = (
         None if random_seed_value is None else int(random_seed_value)
@@ -634,6 +695,7 @@ def _default_service_factory(scenario: Scenario) -> SimulationService:
     coordinator = EngineSimulationCoordinator(
         sensor_model=sensor_model,
         sensor_fault_injector=SensorFaultInjector(random_seed=random_seed),
+        scheduler_config=scheduler_config,
     )
     base_directory = Path(
         str(overrides.get("artifact_base_directory", "artifacts/runs"))

@@ -46,6 +46,13 @@ class ScenarioResult:
     simulation_start_time_s: float
     simulation_end_time_s: float
     simulated_duration_s: float
+    scheduler_preset: str
+    scheduler_base_tick_s: float
+    scheduler_execution_convention: str
+    scheduler_task_configuration: tuple[
+        tuple[str, int, int, int, bool],
+        ...,
+    ]
     wall_clock_execution_duration_s: float
     real_time_factor: float | None
     final_engine_state: EngineOperatingState

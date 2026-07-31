@@ -28,6 +28,7 @@ SUPPORTED_CONFIGURATION_OVERRIDES = frozenset(
         "artifact_base_directory",
         "telemetry_sampling_period_s",
         "sensor_random_seed",
+        "scheduler_preset",
     }
 )
 

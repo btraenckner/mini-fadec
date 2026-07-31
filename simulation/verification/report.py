@@ -38,6 +38,14 @@ def write_verification_artifacts(
             "scenario_name": result.scenario_name,
             "overall_result": result.overall_status.value,
             "execution_status": result.execution_status,
+            "scheduler": {
+                "preset": result.scheduler_preset,
+                "base_tick_s": result.scheduler_base_tick_s,
+                "execution_convention": (
+                    result.scheduler_execution_convention
+                ),
+                "tasks": result.scheduler_task_configuration,
+            },
             "summary_counts": {
                 "passed": result.passed_requirement_count,
                 "failed": result.failed_requirement_count,
@@ -118,6 +126,12 @@ def _write_markdown_report(
         "",
         f"- Execution status: {result.execution_status}",
         f"- Simulated duration: {result.simulated_duration_s:.3f} s",
+        f"- Scheduler preset: {result.scheduler_preset}",
+        f"- Scheduler base tick: {result.scheduler_base_tick_s:.6f} s",
+        (
+            "- Scheduler execution convention: "
+            f"{result.scheduler_execution_convention}"
+        ),
         f"- Wall-clock duration: {result.wall_clock_execution_duration_s:.6f} s",
         f"- Final engine state: {result.final_engine_state.value}",
         f"- Git commit: {git_commit or 'unavailable'}",
@@ -130,11 +144,25 @@ def _write_markdown_report(
         f"- Not evaluated: {result.not_evaluated_requirement_count}",
         f"- Critical failures: {result.critical_failure_count}",
         "",
+        "## Scheduler Tasks",
+        "",
+        "| Task | Period (ticks) | Phase (ticks) | Priority | Enabled |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    lines.extend(
+        f"| {name} | {period} | {phase} | {priority} | {enabled} |"
+        for name, period, phase, priority, enabled
+        in result.scheduler_task_configuration
+    )
+    lines.extend(
+        [
+        "",
         "## Actions",
         "",
         "| Action | Status | Time (s) | Message |",
         "|---|---:|---:|---|",
-    ]
+        ]
+    )
     lines.extend(
         f"| {action.action_id} | {action.status.value} | "
         f"{_format_optional(action.execution_time_s)} | "

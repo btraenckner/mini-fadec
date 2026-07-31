@@ -33,6 +33,15 @@ class ConditionContext:
     snapshots: tuple[SimulationSnapshot, ...]
     recent_events: tuple[SimulationEvent, ...]
     action_results: Mapping[str, ActionResultView]
+    authoritative_simulation_time_s: float | None = None
+
+    @property
+    def simulation_time_s(self) -> float:
+        """Return scheduler time, falling back for compatibility contexts."""
+
+        if self.authoritative_simulation_time_s is not None:
+            return self.authoritative_simulation_time_s
+        return self.latest_snapshot.simulation_time_s
 
 
 class ScenarioCondition(Protocol):
@@ -233,9 +242,10 @@ class ElapsedAfterActionCondition:
             return False
         if self.require_success and result.status_name != "EXECUTED":
             return False
+        current_time_s = context.simulation_time_s
         return (
-            context.latest_snapshot.simulation_time_s
-            + _time_tolerance(context.latest_snapshot.simulation_time_s)
+            current_time_s
+            + _time_tolerance(current_time_s)
             >= result.execution_time_s + self.elapsed_s
         )
 

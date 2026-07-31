@@ -16,7 +16,7 @@ class AtTimeTrigger:
             raise ValueError("trigger time_s cannot be negative")
 
     def is_due(self, context: ConditionContext) -> bool:
-        current_time_s = context.latest_snapshot.simulation_time_s
+        current_time_s = context.simulation_time_s
         tolerance_s = 1.0e-12 * max(1.0, abs(current_time_s), self.time_s)
         return current_time_s + tolerance_s >= self.time_s
 
