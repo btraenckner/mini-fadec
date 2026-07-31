@@ -31,6 +31,10 @@ def test_snapshot_contains_all_mandatory_observable_groups() -> None:
         "egt_fuel_limit",
         "active_protection_limiter",
         "allowed_fuel_command",
+        "plant_model_id",
+        "plant_time_s",
+        "plant_step_count",
+        "plant_diagnostics",
     }
 
     assert mandatory_fields <= {field.name for field in fields(snapshot)}
@@ -45,13 +49,16 @@ def test_snapshot_serialization_is_stable_and_preserves_unavailable_values() -> 
     second_row = snapshot_to_telemetry_row(snapshot)
 
     assert tuple(first_row) == TELEMETRY_FIELDS
-    assert tuple(first_row) == tuple(field.name for field in fields(snapshot))
+    snapshot_fields = {field.name for field in fields(snapshot)}
+    assert snapshot_fields - {"plant_diagnostics"} <= set(first_row)
     assert first_row == second_row
     assert first_row["telemetry_schema_version"] == TELEMETRY_SCHEMA_VERSION
     assert first_row["operating_state"] == "OFF"
     assert first_row["active_protection_limiter"] == "HARD_CUTOFF"
     assert first_row["speed_error_rpm"] is None
     assert first_row["rotor_acceleration_rpm_per_s"] is None
+    assert first_row["plant_model_id"] == "first_order"
+    assert first_row["plant_effective_fuel"] is None
 
 
 def test_snapshot_serialization_contains_only_flat_serializable_values() -> None:

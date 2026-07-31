@@ -92,7 +92,39 @@ TELEMETRY_FIELDS = (
     "controller_execution_count",
     "protection_execution_count",
     "state_machine_execution_count",
+    "plant_model_id",
+    "plant_display_name",
+    "plant_model_version",
+    "plant_time_s",
+    "plant_step_count",
+    "plant_pathsim_version",
+    "plant_solver_id",
+    "plant_solver_step_count",
+    "plant_effective_fuel",
+    "plant_normalized_speed",
+    "plant_gas_temperature_c",
+    "plant_combustion_effectiveness",
+    "plant_starter_torque",
+    "plant_turbine_torque",
+    "plant_compressor_load",
+    "plant_friction_load",
+    "plant_equilibrium_temperature_c",
 )
+
+_PATHSIM_TELEMETRY_ATTRIBUTES = {
+    "plant_pathsim_version": "pathsim_version",
+    "plant_solver_id": "solver_id",
+    "plant_solver_step_count": "solver_step_count",
+    "plant_effective_fuel": "effective_fuel",
+    "plant_normalized_speed": "normalized_speed",
+    "plant_gas_temperature_c": "gas_temperature_c",
+    "plant_combustion_effectiveness": "combustion_effectiveness",
+    "plant_starter_torque": "starter_torque",
+    "plant_turbine_torque": "turbine_torque",
+    "plant_compressor_load": "compressor_load",
+    "plant_friction_load": "friction_load",
+    "plant_equilibrium_temperature_c": "equilibrium_temperature_c",
+}
 
 
 def snapshot_to_telemetry_row(
@@ -101,9 +133,21 @@ def snapshot_to_telemetry_row(
     """Return one flat row in the documented deterministic schema order."""
 
     return {
-        field_name: _serialize_value(getattr(snapshot, field_name))
+        field_name: _serialize_value(_telemetry_value(snapshot, field_name))
         for field_name in TELEMETRY_FIELDS
     }
+
+
+def _telemetry_value(
+    snapshot: SimulationSnapshot,
+    field_name: str,
+) -> object:
+    pathsim_attribute = _PATHSIM_TELEMETRY_ATTRIBUTES.get(field_name)
+    if pathsim_attribute is None:
+        return getattr(snapshot, field_name)
+    if snapshot.plant_diagnostics is None:
+        return None
+    return getattr(snapshot.plant_diagnostics, pathsim_attribute)
 
 
 def _serialize_value(value: object) -> SerializedValue:

@@ -1106,6 +1106,142 @@ class DeterministicTaskOrderRequirementEvaluator:
         )
 
 
+@dataclass(frozen=True)
+class PlantModelRequirementEvaluator:
+    """Verify that all captured snapshots identify one selected plant."""
+
+    expected_model_id: str
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        observed = {snapshot.plant_model_id for snapshot in context.snapshots}
+        passed = observed == {self.expected_model_id}
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=",".join(sorted(observed)),
+                expected_value=self.expected_model_id,
+            ),
+            (
+                f"Plant model {self.expected_model_id} was used"
+                if passed
+                else f"Unexpected plant model set: {sorted(observed)}"
+            ),
+            None if passed else "PLANT_MODEL_MISMATCH",
+        )
+
+
+@dataclass(frozen=True)
+class FinitePlantSignalsRequirementEvaluator:
+    """Verify finite, bounded basic physical outputs for a development plant."""
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        violation = next(
+            (
+                snapshot
+                for snapshot in context.snapshots
+                if not all(
+                    math.isfinite(value)
+                    for value in (
+                        snapshot.rotor_speed_rpm,
+                        snapshot.exhaust_temperature_c,
+                        snapshot.estimated_thrust_n,
+                    )
+                )
+                or snapshot.rotor_speed_rpm < 0.0
+                or snapshot.estimated_thrust_n < 0.0
+            ),
+            None,
+        )
+        passed = violation is None
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=passed,
+                expected_value=True,
+                first_violation_time_s=(
+                    violation.simulation_time_s
+                    if violation is not None
+                    else None
+                ),
+            ),
+            (
+                "All plant signals were finite and non-negative where required"
+                if passed
+                else "A non-finite or negative physical output was observed"
+            ),
+            None if passed else "INVALID_PLANT_SIGNAL",
+        )
+
+
+@dataclass(frozen=True)
+class PlantTimeSynchronizationRequirementEvaluator:
+    """Verify scheduler snapshot time and plant integration time agree."""
+
+    tolerance_s: float = 1.0e-10
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        errors = tuple(
+            abs(snapshot.plant_time_s - snapshot.simulation_time_s)
+            for snapshot in context.snapshots
+        )
+        maximum_error_s = max(errors, default=0.0)
+        passed = maximum_error_s <= self.tolerance_s
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=maximum_error_s,
+                upper_limit=self.tolerance_s,
+            ),
+            (
+                f"Maximum plant time error was {maximum_error_s:.3e} s"
+            ),
+            None if passed else "PLANT_TIME_MISMATCH",
+        )
+
+
+@dataclass(frozen=True)
+class PathSimFuelLagRequirementEvaluator:
+    """Verify at least one commanded-fuel transient leads effective fuel."""
+
+    minimum_lag: float = 1.0e-4
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        match = next(
+            (
+                snapshot
+                for snapshot in context.snapshots
+                if snapshot.plant_diagnostics is not None
+                and snapshot.allowed_fuel_command
+                - snapshot.plant_diagnostics.effective_fuel
+                >= self.minimum_lag
+            ),
+            None,
+        )
+        passed = match is not None
+        measured_lag = (
+            match.allowed_fuel_command
+            - match.plant_diagnostics.effective_fuel
+            if match is not None and match.plant_diagnostics is not None
+            else None
+        )
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=measured_lag,
+                lower_limit=self.minimum_lag,
+                evaluation_time_s=(
+                    match.simulation_time_s if match is not None else None
+                ),
+            ),
+            (
+                "Effective fuel lagged the applied command"
+                if passed
+                else "No effective-fuel lag was observed"
+            ),
+            None if passed else "PATHSIM_FUEL_LAG_NOT_OBSERVED",
+        )
+
+
 def _expected_release_count(
     current_tick: int,
     period_ticks: int,

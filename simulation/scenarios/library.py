@@ -3,6 +3,8 @@
 from dataclasses import replace
 
 from simulation.operation.engine_state import EngineOperatingState
+from simulation.plants.config import PlantSelectionConfig
+from simulation.plants.types import PlantModelKind
 from simulation.protection.types import ProtectionLimiter
 from simulation.scenarios.actions import (
     AddMarkerAction,
@@ -35,16 +37,21 @@ from simulation.verification.evaluators import (
     EventNotObservedRequirementEvaluator,
     EventObservedRequirementEvaluator,
     FaultResponseTimeRequirementEvaluator,
+    FinitePlantSignalsRequirementEvaluator,
     FuelCutoffResponseRequirementEvaluator,
     DeterministicTaskOrderRequirementEvaluator,
     NoTruthFallbackRequirementEvaluator,
     NoMissedSchedulerReleaseRequirementEvaluator,
     NumericSignal,
     OvershootRequirementEvaluator,
+    PathSimFuelLagRequirementEvaluator,
+    PlantModelRequirementEvaluator,
+    PlantTimeSynchronizationRequirementEvaluator,
     ProtectionLimiterObservedRequirementEvaluator,
     SensorHealthReachedRequirementEvaluator,
     SchedulerPresetRequirementEvaluator,
     SettlingTimeRequirementEvaluator,
+    StateReachedRequirementEvaluator,
     StateReachedWithinRequirementEvaluator,
     StateSequenceRequirementEvaluator,
     TaskExecutionCountRequirementEvaluator,
@@ -944,6 +951,193 @@ def slow_sensor_sensitivity_scenario() -> Scenario:
     )
 
 
+def _pathsim_requirements(
+    prefix: str,
+    *,
+    require_fuel_lag: bool = False,
+) -> tuple[Requirement, ...]:
+    requirements = (
+        _requirement(
+            f"{prefix}-MODEL",
+            "The selected plant shall be the PathSim nonlinear grey-box v1.",
+            RequirementCategory.LOGICAL_INVARIANT,
+            PlantModelRequirementEvaluator("pathsim_greybox_v1"),
+            RequirementCriticality.CRITICAL,
+        ),
+        _requirement(
+            f"{prefix}-FINITE",
+            "Development-plant outputs shall remain finite and non-negative.",
+            RequirementCategory.LOGICAL_INVARIANT,
+            FinitePlantSignalsRequirementEvaluator(),
+            RequirementCriticality.CRITICAL,
+        ),
+        _requirement(
+            f"{prefix}-TIME",
+            "PathSim and scheduler plant time shall remain synchronized.",
+            RequirementCategory.SCHEDULER_TIMING,
+            PlantTimeSynchronizationRequirementEvaluator(),
+            RequirementCriticality.CRITICAL,
+        ),
+        *_common_fuel_requirements(prefix),
+    )
+    if require_fuel_lag:
+        requirements += (
+            _requirement(
+                f"{prefix}-FUEL-LAG",
+                "Effective fuel shall lag an increasing applied fuel command.",
+                RequirementCategory.TRANSIENT,
+                PathSimFuelLagRequirementEvaluator(),
+            ),
+        )
+    return requirements
+
+
+def pathsim_smoke_scenario() -> Scenario:
+    """Return the mandatory short PathSim construction and stepping smoke run."""
+
+    return Scenario(
+        scenario_id="SCN-PLANT-PS-001",
+        name="pathsim_smoke",
+        description=(
+            "Short PathSim plant run verifying finite outputs and exact scheduler "
+            "time advancement."
+        ),
+        max_duration_s=3.0,
+        actions=(
+            StartEngineAction(
+                action_id="start",
+                description="Apply the normal startup request",
+                trigger=AtTimeTrigger(0.10),
+            ),
+            AddMarkerAction(
+                action_id="smoke_complete",
+                description="Close the deterministic smoke evidence window",
+                trigger=AtTimeTrigger(2.0),
+                marker_text="PathSim smoke interval complete",
+            ),
+        ),
+        requirements=_pathsim_requirements("REQ-PLANT-PS-001"),
+        tags=("pathsim", "plant", "smoke", "development"),
+        recording=RecordingConfiguration(run_name="pathsim_smoke"),
+        plant_config_override=PlantSelectionConfig(
+            model=PlantModelKind.PATHSIM_GREYBOX_V1
+        ),
+    )
+
+
+def pathsim_startup_lifecycle_scenario() -> Scenario:
+    """Return a broad provisional startup lifecycle for the first-draft model."""
+
+    return Scenario(
+        scenario_id="SCN-PLANT-PS-002",
+        name="pathsim_startup_lifecycle",
+        description=(
+            "Provisional OFF-to-IDLE development lifecycle using unvalidated "
+            "PathSim parameters."
+        ),
+        max_duration_s=15.0,
+        actions=(
+            StartEngineAction(
+                action_id="start",
+                description="Request normal engine startup",
+                trigger=AtTimeTrigger(0.10),
+            ),
+            AddMarkerAction(
+                action_id="idle_reached",
+                description="Mark provisional PathSim idle entry",
+                trigger=WhenConditionTrigger(
+                    EngineStateEqualsCondition(EngineOperatingState.IDLE),
+                    timeout_s=14.0,
+                ),
+                marker_text="PathSim provisional idle reached",
+            ),
+        ),
+        requirements=(
+            *_pathsim_requirements(
+                "REQ-PLANT-PS-002",
+                require_fuel_lag=True,
+            ),
+            _requirement(
+                "REQ-PLANT-PS-002-IDLE",
+                "The provisional model shall reach IDLE within 13 seconds.",
+                RequirementCategory.STATE_TIMING,
+                StateReachedWithinRequirementEvaluator(
+                    EngineOperatingState.IDLE,
+                    reference_action_id="start",
+                    maximum_elapsed_s=13.0,
+                ),
+            ),
+        ),
+        tags=("pathsim", "plant", "development", "lifecycle"),
+        recording=RecordingConfiguration(run_name="pathsim_startup_lifecycle"),
+        expected_terminal_condition=EngineStateEqualsCondition(
+            EngineOperatingState.IDLE
+        ),
+        plant_config_override=PlantSelectionConfig(
+            model=PlantModelKind.PATHSIM_GREYBOX_V1
+        ),
+    )
+
+
+def pathsim_fuel_step_scenario() -> Scenario:
+    """Return a controlled deterministic PathSim fuel/throttle transient."""
+
+    return Scenario(
+        scenario_id="SCN-PLANT-PS-003",
+        name="pathsim_fuel_step",
+        description=(
+            "Normal-path throttle step exposing nonlinear spool, fuel-lag, "
+            "thermal, and thrust behavior."
+        ),
+        max_duration_s=20.0,
+        actions=(
+            StartEngineAction(
+                action_id="start",
+                description="Request normal engine startup",
+                trigger=AtTimeTrigger(0.10),
+            ),
+            SetThrottleAction(
+                action_id="fuel_step",
+                description="Apply a moderate deterministic throttle step",
+                trigger=WhenConditionTrigger(
+                    EngineStateEqualsCondition(EngineOperatingState.IDLE),
+                    timeout_s=14.0,
+                ),
+                throttle_demand=0.60,
+            ),
+            AddMarkerAction(
+                action_id="step_complete",
+                description="Close the nonlinear response evidence window",
+                trigger=WhenConditionTrigger(
+                    ElapsedAfterActionCondition("fuel_step", 4.0),
+                    timeout_s=19.0,
+                ),
+                marker_text="PathSim fuel-step interval complete",
+            ),
+        ),
+        requirements=(
+            *_pathsim_requirements(
+                "REQ-PLANT-PS-003",
+                require_fuel_lag=True,
+            ),
+            _requirement(
+                "REQ-PLANT-PS-003-RUNNING",
+                "The throttle step shall enter RUNNING state.",
+                RequirementCategory.STATE_SEQUENCE,
+                StateReachedRequirementEvaluator(
+                    EngineOperatingState.RUNNING,
+                    after_action_id="fuel_step",
+                ),
+            ),
+        ),
+        tags=("pathsim", "plant", "development", "transient"),
+        recording=RecordingConfiguration(run_name="pathsim_fuel_step"),
+        plant_config_override=PlantSelectionConfig(
+            model=PlantModelKind.PATHSIM_GREYBOX_V1
+        ),
+    )
+
+
 REGRESSION_SCENARIOS = (
     normal_lifecycle_scenario(),
     large_throttle_step_scenario(),
@@ -963,6 +1157,12 @@ EXPERIMENTAL_SCENARIOS = (
     slow_sensor_sensitivity_scenario(),
 )
 
+PATHSIM_SCENARIOS = (
+    pathsim_smoke_scenario(),
+    pathsim_startup_lifecycle_scenario(),
+    pathsim_fuel_step_scenario(),
+)
+
 
 def list_scenarios() -> tuple[Scenario, ...]:
     """Return mandatory regression scenarios in deterministic order."""
@@ -973,7 +1173,13 @@ def list_scenarios() -> tuple[Scenario, ...]:
 def list_all_scenarios() -> tuple[Scenario, ...]:
     """Return mandatory and explicitly experimental scenarios."""
 
-    return REGRESSION_SCENARIOS + EXPERIMENTAL_SCENARIOS
+    return REGRESSION_SCENARIOS + EXPERIMENTAL_SCENARIOS + PATHSIM_SCENARIOS
+
+
+def list_pathsim_scenarios() -> tuple[Scenario, ...]:
+    """Return the isolated PathSim smoke and development scenario group."""
+
+    return PATHSIM_SCENARIOS
 
 
 def get_scenario(identifier: str) -> Scenario:

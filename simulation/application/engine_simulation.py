@@ -21,7 +21,6 @@ from simulation.core.types import (
     SensorData,
     ValidatedSensorData,
 )
-from simulation.models.engine_model import FirstOrderEngineModel
 from simulation.operation.engine_state import EngineOperatingState
 from simulation.operation.state_machine import (
     EngineOperatingCommand,
@@ -41,6 +40,13 @@ from simulation.protection.types import (
     ProtectionDiagnosticReason,
     ProtectionResult,
 )
+from simulation.plants.config import PlantSelectionConfig
+from simulation.plants.factory import (
+    create_engine_plant,
+    plant_selection_for,
+)
+from simulation.plants.interfaces import EnginePlant
+from simulation.plants.types import PlantSimulationError
 from simulation.scheduling.config import SchedulerConfig, seconds_to_ticks
 from simulation.scheduling.diagnostics import (
     SCHEDULER_SCHEMA_VERSION,
@@ -106,7 +112,7 @@ class EngineSimulationCoordinator:
 
     def __init__(
         self,
-        engine_model: FirstOrderEngineModel | None = None,
+        engine_model: EnginePlant | None = None,
         state_machine: EngineStateMachine | None = None,
         speed_controller: PIEngineSpeedController | None = None,
         egt_limiter: ExhaustTemperatureLimiter | None = None,
@@ -119,8 +125,22 @@ class EngineSimulationCoordinator:
         snapshot_sinks: Iterable[SnapshotSink] = (),
         ambient_conditions: AmbientConditions | None = None,
         scheduler_config: SchedulerConfig | None = None,
+        plant_config: PlantSelectionConfig | None = None,
     ) -> None:
-        self.engine_model = engine_model or FirstOrderEngineModel()
+        if engine_model is not None and plant_config is not None:
+            raise ValueError(
+                "provide either engine_model or plant_config, not both"
+            )
+        self.ambient_conditions = ambient_conditions or AmbientConditions()
+        if engine_model is None:
+            self.plant_config = plant_config or PlantSelectionConfig()
+            self.engine_model = create_engine_plant(
+                self.plant_config,
+                initial_ambient=self.ambient_conditions,
+            )
+        else:
+            self.engine_model = engine_model
+            self.plant_config = plant_selection_for(engine_model.model_id)
         self.state_machine = state_machine or EngineStateMachine()
         self.speed_controller = speed_controller or PIEngineSpeedController()
         if protection_manager is not None and egt_limiter is not None:
@@ -154,7 +174,6 @@ class EngineSimulationCoordinator:
         self._snapshot_sinks = list(snapshot_sinks)
         self._telemetry_sinks: list[SnapshotSink] = []
         self._dashboard_sinks: list[SnapshotSink] = []
-        self.ambient_conditions = ambient_conditions or AmbientConditions()
         self.scheduler_config = scheduler_config or nominal_multirate()
 
         self._simulation_time_s = 0.0
@@ -646,6 +665,14 @@ class EngineSimulationCoordinator:
         self._simulation_time_s = (
             context.release_time_s + context.execution_period_s
         )
+        plant_time_s = self.engine_model.get_diagnostics().model_time_s
+        tolerance_s = 1.0e-12 * max(1.0, self._simulation_time_s)
+        if abs(plant_time_s - self._simulation_time_s) > tolerance_s:
+            raise PlantSimulationError(
+                "scheduler and plant time diverged: "
+                f"scheduler={self._simulation_time_s:.12f} s, "
+                f"plant={plant_time_s:.12f} s"
+            )
         self._step_index += 1
 
     def _snapshot_task(self, context: TaskExecutionContext) -> None:
@@ -675,6 +702,7 @@ class EngineSimulationCoordinator:
             task.task_name: task
             for task in self.scheduler.task_diagnostics()
         }
+        plant_diagnostics = self.engine_model.get_diagnostics()
         current_tick_tasks = tuple(
             task.name
             for task in sorted(
@@ -883,6 +911,12 @@ class EngineSimulationCoordinator:
             state_machine_execution_count=scheduler_diagnostics[
                 STATE_MACHINE_TASK
             ].execution_count,
+            plant_model_id=plant_diagnostics.model_id,
+            plant_display_name=plant_diagnostics.display_name,
+            plant_model_version=plant_diagnostics.model_version,
+            plant_time_s=plant_diagnostics.model_time_s,
+            plant_step_count=plant_diagnostics.step_count,
+            plant_diagnostics=plant_diagnostics.pathsim,
         )
         self._previous_throttle_demand = throttle_demand
         self._previous_operating_state_for_snapshot = operating_command.state
@@ -1099,6 +1133,7 @@ class EngineSimulationCoordinator:
         """Create the safe initial OFF-state snapshot."""
 
         protection_result = self.protection_manager.last_result
+        plant_diagnostics = self.engine_model.get_diagnostics()
         return SimulationSnapshot(
             telemetry_schema_version=TELEMETRY_SCHEMA_VERSION,
             simulation_time_s=0.0,
@@ -1220,4 +1255,10 @@ class EngineSimulationCoordinator:
             automatic_sensor_fault_request_active=False,
             sensor_fault_response_reason=SensorFaultResponseReason.NONE.value,
             fuel_cutoff_due_to_sensor_invalidity=False,
+            plant_model_id=plant_diagnostics.model_id,
+            plant_display_name=plant_diagnostics.display_name,
+            plant_model_version=plant_diagnostics.model_version,
+            plant_time_s=plant_diagnostics.model_time_s,
+            plant_step_count=plant_diagnostics.step_count,
+            plant_diagnostics=plant_diagnostics.pathsim,
         )

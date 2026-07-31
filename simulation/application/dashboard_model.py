@@ -10,6 +10,7 @@ from simulation.application.engine_simulation import (
     EngineSimulationCoordinator,
     EngineSimulationSnapshot,
 )
+from simulation.application.factory import create_application
 from simulation.application.simulation_service import SimulationService
 from simulation.operation.engine_state import EngineOperatingState
 from simulation.operation.state_machine import EngineOperationRequest
@@ -409,10 +410,15 @@ class DashboardSimulation:
     ) -> None:
         if coordinator is not None and service is not None:
             raise ValueError("provide either coordinator or service, not both")
-        self.service = service or SimulationService(
-            coordinator=coordinator,
-            time_step_s=time_step_s,
-        )
+        if service is not None:
+            self.service = service
+        elif coordinator is not None:
+            self.service = SimulationService(
+                coordinator=coordinator,
+                time_step_s=time_step_s,
+            )
+        else:
+            self.service = create_application(time_step_s=time_step_s)
         # Compatibility view for integrations that only read the coordinator.
         self.coordinator = self.service.coordinator
         self.controls = controls or DashboardControls()
@@ -545,7 +551,8 @@ class DashboardSimulation:
             self._scenario_runner_factory()
             if self._scenario_runner_factory is not None
             else ScenarioRunner(
-                scheduler_preset=self._selected_scheduler_preset
+                scheduler_preset=self._selected_scheduler_preset,
+                plant_config=self.service.coordinator.plant_config,
             )
         )
         self._scenario_progress = self._scenario_runner.prepare_scenario(

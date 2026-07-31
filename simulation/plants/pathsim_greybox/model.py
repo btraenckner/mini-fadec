@@ -207,14 +207,13 @@ class PathSimGreyBoxEngineModel:
     def get_metadata(self) -> dict[str, object]:
         """Return complete static configuration, assumptions, and limitations."""
 
+        initial_state = self._initial_state(self._ambient)
         return {
             "plant_model_id": self.model_id,
             "plant_display_name": self.display_name,
             "plant_model_version": self.model_version,
             "configuration": asdict(self.configuration),
-            "initial_conditions": asdict(
-                self.configuration.initial_conditions
-            ),
+            "initial_conditions": asdict(initial_state),
             "pathsim_package_version": self._adapter.pathsim_version,
             "solver_configuration": asdict(self.configuration.solver),
             "solver_api": "Simulation.timestep(dt, adaptive=False)",

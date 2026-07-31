@@ -8,8 +8,9 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
-from simulation.application.engine_simulation import EngineSimulationCoordinator
+from simulation.application.factory import create_application
 from simulation.application.simulation_service import SimulationService
+from simulation.plants.config import PlantSelectionConfig
 from simulation.scenarios.actions import (
     ActionExecutionStatus,
     ActionResult,
@@ -20,11 +21,6 @@ from simulation.scenarios.definitions import Scenario
 from simulation.scenarios.triggers import WhenConditionTrigger
 from simulation.scheduling.presets import get_scheduler_preset
 from simulation.scheduling.diagnostics import SchedulerDiagnostics
-from simulation.sensors.fault_injection import SensorFaultInjector
-from simulation.sensors.sensor_model import (
-    ConfigurableSensorModel,
-    SensorModelConfiguration,
-)
 from simulation.telemetry.events import SimulationEvent
 from simulation.telemetry.recorder import RunRecorder, RunRecorderParameters
 from simulation.telemetry.snapshot import SimulationSnapshot
@@ -86,6 +82,7 @@ class ScenarioRunner:
         performance_clock: Callable[[], float] = time.perf_counter,
         wall_clock: Callable[[], datetime] | None = None,
         scheduler_preset: str | None = None,
+        plant_config: PlantSelectionConfig | None = None,
     ) -> None:
         self._service_factory = service_factory or _default_service_factory
         self._paced = paced
@@ -93,6 +90,7 @@ class ScenarioRunner:
         self._performance_clock = performance_clock
         self._wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
         self._scheduler_preset = scheduler_preset
+        self._plant_config = plant_config
         self._scenario: Scenario | None = None
         self._service: SimulationService | None = None
         self._execution_state = ScenarioExecutionState.NOT_STARTED
@@ -124,7 +122,7 @@ class ScenarioRunner:
 
         if self._execution_state is ScenarioExecutionState.RUNNING:
             raise RuntimeError("a scenario is already running")
-        effective_scenario = self._scenario_with_scheduler_override(scenario)
+        effective_scenario = self._scenario_with_runtime_overrides(scenario)
         self._scenario = effective_scenario
         self._service = self._service_factory(effective_scenario)
         self._execution_state = ScenarioExecutionState.RUNNING
@@ -264,17 +262,20 @@ class ScenarioRunner:
             ),
         )
 
-    def _scenario_with_scheduler_override(
+    def _scenario_with_runtime_overrides(
         self,
         scenario: Scenario,
     ) -> Scenario:
-        if self._scheduler_preset is None:
-            return scenario
         overrides = dict(scenario.configuration_overrides)
-        overrides["scheduler_preset"] = self._scheduler_preset
+        if self._scheduler_preset is not None:
+            overrides["scheduler_preset"] = self._scheduler_preset
+        plant_config_override = scenario.plant_config_override
+        if plant_config_override is None:
+            plant_config_override = self._plant_config
         return replace(
             scenario,
             configuration_overrides=tuple(overrides.items()),
+            plant_config_override=plant_config_override,
         )
 
     def _evaluate_due_actions(self) -> None:
@@ -591,6 +592,9 @@ class ScenarioRunner:
                 )
                 for task in self._service.coordinator.scheduler_config.tasks
             ),
+            plant_model_id=self._snapshots[-1].plant_model_id,
+            plant_display_name=self._snapshots[-1].plant_display_name,
+            plant_model_version=self._snapshots[-1].plant_model_version,
             wall_clock_execution_duration_s=wall_duration_s,
             real_time_factor=real_time_factor,
             final_engine_state=self._snapshots[-1].operating_state,
@@ -689,14 +693,6 @@ def _default_service_factory(scenario: Scenario) -> SimulationService:
     random_seed = (
         None if random_seed_value is None else int(random_seed_value)
     )
-    sensor_model = ConfigurableSensorModel(
-        SensorModelConfiguration(random_seed=random_seed)
-    )
-    coordinator = EngineSimulationCoordinator(
-        sensor_model=sensor_model,
-        sensor_fault_injector=SensorFaultInjector(random_seed=random_seed),
-        scheduler_config=scheduler_config,
-    )
     base_directory = Path(
         str(overrides.get("artifact_base_directory", "artifacts/runs"))
     )
@@ -709,8 +705,10 @@ def _default_service_factory(scenario: Scenario) -> SimulationService:
             telemetry_sampling_period_s=telemetry_sampling_period_s,
         )
     )
-    return SimulationService(
-        coordinator=coordinator,
+    return create_application(
+        plant_config=scenario.plant_config_override,
+        scheduler_config=scheduler_config,
+        sensor_random_seed=random_seed,
         recorder=recorder,
         time_step_s=time_step_s,
     )
