@@ -254,7 +254,7 @@ SimulationSnapshot
    +------------+------------+---------------+------------------+
    |            |            |               |
    v            v            v               v
-Terminal     Recorder    Event monitor   Future dashboard
+Terminal     Recorder    Event monitor   Live dashboard
 ```
 
 `SimulationService` is the application control boundary. It owns persistent
@@ -271,7 +271,13 @@ text, or read component internals.
 The current live dashboard uses this service directly. Its run-name field and
 record/stop buttons control the same recorder lifecycle as the terminal, show
 live sample and event counts, and finalize an active recording when the
-dashboard window closes.
+dashboard window closes. A Manual/Runner switch explicitly transfers command
+ownership. Runner mode exposes the deterministic regression library through a
+dropdown and advances the selected `ScenarioRunner` incrementally from the
+dashboard timer. Scenario actions exclusively own engine, sensor, and
+recording commands during that mode, so conflicting manual widgets are
+disabled until the run finishes or is cancelled and the operator switches
+back to manual mode.
 
 ### Telemetry and event schemas
 
@@ -468,13 +474,13 @@ metadata, execution-performance measurement, and the real-time-factor report.
 An explicitly enabled paced mode may sleep once per simulation step.
 
 The synchronous `run_scenario(scenario)` function is the simplest entry point.
-For a future dashboard, `prepare_scenario`, `step_scenario`,
-`get_scenario_progress`, and `cancel_scenario` expose the same core without
-terminal output or UI dependencies. `ScenarioProgress` includes the scenario
-ID, simulation time and duration, execution state, engine state, action counts,
-active recording directory, latest snapshot, recent events, action results,
-and partial requirement status. All collections returned to clients are
-immutable tuples.
+The live dashboard uses `prepare_scenario`, `step_scenario`,
+`get_scenario_progress`, and `cancel_scenario` to expose the same execution
+through its graphical controls without terminal output or UI dependencies in
+the runner. `ScenarioProgress` includes the scenario ID, simulation time and
+duration, execution state, engine state, action counts, active recording
+directory, latest snapshot, recent events, action results, and partial
+requirement status. All collections returned to clients are immutable tuples.
 
 With the same scenario, seed, time step, initial composition, and
 configuration, action order and time, snapshot and event sequences,

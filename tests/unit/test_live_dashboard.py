@@ -14,6 +14,9 @@ from simulation.application.live_dashboard import LiveEngineDashboard  # noqa: E
 from simulation.application.dashboard_model import DashboardSimulation  # noqa: E402
 from simulation.application.simulation_service import SimulationService  # noqa: E402
 from simulation.operation.engine_state import EngineOperatingState  # noqa: E402
+from simulation.scenarios.actions import AddMarkerAction  # noqa: E402
+from simulation.scenarios.definitions import Scenario  # noqa: E402
+from simulation.scenarios.triggers import AtTimeTrigger  # noqa: E402
 from simulation.sensors.fault_injection import (  # noqa: E402
     BiasSensorFault,
     DropoutSensorFault,
@@ -37,6 +40,32 @@ def _recording_dashboard(tmp_path: Path) -> LiveEngineDashboard:
     service = SimulationService(recorder=recorder)
     return LiveEngineDashboard(
         dashboard_simulation=DashboardSimulation(service=service)
+    )
+
+
+def _scenario_dashboard(tmp_path: Path) -> LiveEngineDashboard:
+    scenario = Scenario(
+        scenario_id="SCN-DASHBOARD-TEST",
+        name="dashboard_test",
+        description="Short deterministic dashboard scenario.",
+        max_duration_s=0.10,
+        time_step_s=0.01,
+        actions=(
+            AddMarkerAction(
+                action_id="complete",
+                description="Complete the short dashboard scenario",
+                trigger=AtTimeTrigger(0.02),
+                marker_text="dashboard scenario complete",
+            ),
+        ),
+        requirements=(),
+        configuration_overrides=(
+            ("artifact_base_directory", str(tmp_path)),
+        ),
+    )
+    return LiveEngineDashboard(
+        dashboard_simulation=DashboardSimulation(scenarios=(scenario,)),
+        result_path=tmp_path / "dashboard.png",
     )
 
 
@@ -83,6 +112,9 @@ def test_dashboard_uses_grouped_dark_theme_and_live_status_indicators() -> None:
     )
     assert "150k" in speed_tick_labels
     assert "150000" not in speed_tick_labels
+    assert len(dashboard._scenario_dropdown_labels) == 7
+    assert dashboard._scenario_dropdown_labels[0].startswith("SCN-NORMAL-001")
+    assert dashboard._scenario_dropdown_button.active is False
 
     dashboard._throttle_slider.set_val(0.65)
     dashboard.dashboard_simulation.coordinator.inject_sensor_fault(
@@ -313,3 +345,49 @@ def test_dashboard_close_finalizes_active_recording(tmp_path: Path) -> None:
         metadata = json.load(file)
     assert service.recorder.is_recording is False
     assert metadata["completion_status"] == "complete"
+
+
+def test_dashboard_runs_scenario_live_and_restores_manual_controls(
+    tmp_path: Path,
+) -> None:
+    dashboard = _scenario_dashboard(tmp_path)
+
+    dashboard._on_mode_switch(None)
+
+    assert dashboard.dashboard_simulation.scenario_mode_active
+    assert dashboard._mode_switch_button.label.get_text().startswith("RUNNER")
+    assert dashboard._scenario_dropdown_button.active
+    assert dashboard._throttle_slider.active is False
+
+    dashboard._on_scenario_dropdown(None)
+
+    assert dashboard._scenario_dropdown_axis.get_visible()
+    assert dashboard._scenario_dropdown_labels == (
+        "SCN-DASHBOARD-TEST | dashboard test",
+    )
+    dashboard._scenario_dropdown_selector.set_active(0)
+    assert dashboard._scenario_dropdown_axis.get_visible() is False
+
+    dashboard._on_run_scenario(None)
+
+    assert dashboard.dashboard_simulation.scenario_is_running
+    assert dashboard._scenario_progress_text.get_text().startswith("RUN")
+    assert dashboard._throttle_slider.active is False
+    assert dashboard._start_button.active is False
+
+    dashboard.advance_and_refresh(0.03)
+
+    result = dashboard.dashboard_simulation.scenario_result
+    assert result is not None
+    assert dashboard._scenario_progress_text.get_text().startswith("PASS")
+    assert dashboard._recording_status_text.get_text() == "SCN SAVED"
+    assert dashboard._throttle_slider.active is False
+    assert result.report_path is not None
+    assert result.report_path.is_file()
+
+    dashboard._on_mode_switch(None)
+
+    assert dashboard._scenario_progress_text.get_text() == "MANUAL CONTROL"
+    assert dashboard._throttle_slider.active
+    assert dashboard._start_button.active
+    dashboard.close(save_result=False)

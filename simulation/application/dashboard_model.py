@@ -1,6 +1,7 @@
 """Testable control and history model for the live engine dashboard."""
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
@@ -12,6 +13,13 @@ from simulation.application.engine_simulation import (
 from simulation.application.simulation_service import SimulationService
 from simulation.operation.engine_state import EngineOperatingState
 from simulation.operation.state_machine import EngineOperationRequest
+from simulation.scenarios.definitions import Scenario
+from simulation.scenarios.library import list_scenarios
+from simulation.scenarios.runner import (
+    ScenarioExecutionState,
+    ScenarioProgress,
+    ScenarioRunner,
+)
 from simulation.sensors.fault_injection import (
     BiasSensorFault,
     DriftSensorFault,
@@ -22,6 +30,15 @@ from simulation.sensors.fault_injection import (
     SensorFaultDefinition,
     StuckSensorFault,
 )
+from simulation.telemetry.events import SimulationEvent
+from simulation.verification.results import ScenarioResult
+
+
+class DashboardOperatingMode(Enum):
+    """Operator-selectable live dashboard execution modes."""
+
+    MANUAL = "MANUAL"
+    SCENARIO = "RUNNER"
 
 
 class DashboardFaultType(Enum):
@@ -320,6 +337,28 @@ class DashboardHistory:
         self.egt_limiter_activity.append(snapshot.egt_limiter_active)
         self._trim_to_maximum_samples()
 
+    def clear(self) -> None:
+        """Clear every signal so a new dashboard session starts at zero."""
+
+        histories: tuple[list[object], ...] = (
+            self.times_s,
+            self.operating_states,
+            self.throttle_commands,
+            self.speed_setpoints_rpm,
+            self.rotor_speeds_rpm,
+            self.measured_rotor_speeds_rpm,
+            self.validated_rotor_speeds_rpm,
+            self.exhaust_temperatures_c,
+            self.measured_exhaust_temperatures_c,
+            self.validated_exhaust_temperatures_c,
+            self.requested_fuel_commands,
+            self.allowed_fuel_commands,
+            self.estimated_thrusts_n,
+            self.egt_limiter_activity,
+        )
+        for history in histories:
+            history.clear()
+
     def _trim_to_maximum_samples(self) -> None:
         """Discard the oldest samples when the configured bound is exceeded."""
 
@@ -357,6 +396,8 @@ class DashboardSimulation:
         controls: DashboardControls | None = None,
         sensor_fault_controls: DashboardSensorFaultControls | None = None,
         history: DashboardHistory | None = None,
+        scenarios: tuple[Scenario, ...] | None = None,
+        scenario_runner_factory: Callable[[], ScenarioRunner] | None = None,
         *,
         time_step_s: float = 0.01,
         maximum_catch_up_s: float = 0.25,
@@ -377,12 +418,31 @@ class DashboardSimulation:
         self.time_step_s = time_step_s
         self.maximum_catch_up_s = maximum_catch_up_s
         self._accumulated_time_s = 0.0
+        self.scenarios = scenarios if scenarios is not None else list_scenarios()
+        if not self.scenarios:
+            raise ValueError("the dashboard requires at least one scenario")
+        self._scenario_runner_factory = (
+            scenario_runner_factory or ScenarioRunner
+        )
+        self.operating_mode = DashboardOperatingMode.MANUAL
+        self._selected_scenario_index = 0
+        self._scenario_runner: ScenarioRunner | None = None
+        self._scenario_progress: ScenarioProgress | None = None
+        self._scenario_result: ScenarioResult | None = None
 
     def advance(self, elapsed_wall_time_s: float) -> EngineSimulationSnapshot:
         """Advance fixed simulation steps represented by elapsed wall time."""
 
         if elapsed_wall_time_s < 0.0:
             raise ValueError("elapsed_wall_time_s must not be negative")
+
+        if (
+            self.operating_mode is DashboardOperatingMode.SCENARIO
+            and self._scenario_progress is not None
+        ):
+            return self._advance_scenario(elapsed_wall_time_s)
+        if self.operating_mode is DashboardOperatingMode.SCENARIO:
+            return self.service.get_latest_snapshot()
 
         self._accumulated_time_s += min(
             elapsed_wall_time_s,
@@ -395,3 +455,179 @@ class DashboardSimulation:
             self._accumulated_time_s -= self.time_step_s
 
         return self.service.get_latest_snapshot()
+
+    @property
+    def selected_scenario(self) -> Scenario:
+        """Return the scenario currently selected by the operator."""
+
+        return self.scenarios[self._selected_scenario_index]
+
+    @property
+    def scenario_progress(self) -> ScenarioProgress | None:
+        """Return the most recent immutable scenario progress view."""
+
+        return self._scenario_progress
+
+    @property
+    def scenario_result(self) -> ScenarioResult | None:
+        """Return the final scenario result when execution has terminated."""
+
+        return self._scenario_result
+
+    @property
+    def scenario_mode_active(self) -> bool:
+        """Return whether the dashboard is displaying a scenario session."""
+
+        return self.operating_mode is DashboardOperatingMode.SCENARIO
+
+    @property
+    def scenario_is_running(self) -> bool:
+        """Return whether the selected scenario is actively advancing."""
+
+        return (
+            self._scenario_progress is not None
+            and self._scenario_progress.execution_state
+            is ScenarioExecutionState.RUNNING
+        )
+
+    def select_adjacent_scenario(self, offset: int) -> Scenario:
+        """Cycle through the deterministic scenario library."""
+
+        return self.select_scenario(
+            (self._selected_scenario_index + offset) % len(self.scenarios)
+        )
+
+    def select_scenario(self, scenario_index: int) -> Scenario:
+        """Select one registered scenario while the runner is stopped."""
+
+        if self.scenario_is_running:
+            raise RuntimeError(
+                "cancel or finish the scenario before changing selection"
+            )
+        if not 0 <= scenario_index < len(self.scenarios):
+            raise IndexError("scenario index is out of range")
+        self._selected_scenario_index = scenario_index
+        self._scenario_runner = None
+        self._scenario_progress = None
+        self._scenario_result = None
+        return self.selected_scenario
+
+    def enter_runner_mode(self) -> EngineSimulationSnapshot:
+        """Switch from direct manual control to scenario-runner control."""
+
+        if self.service.recorder.is_recording:
+            raise RuntimeError(
+                "stop the manual recording before entering runner mode"
+            )
+        self.operating_mode = DashboardOperatingMode.SCENARIO
+        self._accumulated_time_s = 0.0
+        return self.get_latest_snapshot()
+
+    def start_selected_scenario(self) -> ScenarioProgress:
+        """Prepare the selected scenario and enter isolated scenario mode."""
+
+        if self.scenario_is_running:
+            raise RuntimeError("a dashboard scenario is already running")
+        if self.service.recorder.is_recording:
+            raise RuntimeError(
+                "stop the manual recording before starting a scenario"
+            )
+
+        self._scenario_runner = self._scenario_runner_factory()
+        self._scenario_progress = self._scenario_runner.prepare_scenario(
+            self.selected_scenario
+        )
+        self._scenario_result = self._scenario_runner.result
+        self.operating_mode = DashboardOperatingMode.SCENARIO
+        self._accumulated_time_s = 0.0
+        self.history.clear()
+        self.history.append(self._scenario_progress.latest_snapshot)
+        return self._scenario_progress
+
+    def cancel_scenario(self) -> ScenarioResult:
+        """Cancel an active scenario and retain its final evidence for review."""
+
+        if self._scenario_runner is None or self._scenario_progress is None:
+            raise RuntimeError("no dashboard scenario has been started")
+        self._scenario_result = self._scenario_runner.cancel_scenario()
+        self._scenario_progress = (
+            self._scenario_runner.get_scenario_progress()
+        )
+        self._append_scenario_snapshot()
+        return self._scenario_result
+
+    def return_to_manual_mode(self) -> EngineSimulationSnapshot:
+        """Leave a completed scenario and restore the manual simulation."""
+
+        if self.scenario_is_running:
+            raise RuntimeError(
+                "cancel or finish the scenario before returning to manual mode"
+            )
+        self.operating_mode = DashboardOperatingMode.MANUAL
+        self._accumulated_time_s = 0.0
+        snapshot = self.service.get_latest_snapshot()
+        self.history.clear()
+        self.history.append(snapshot)
+        return snapshot
+
+    def get_latest_snapshot(self) -> EngineSimulationSnapshot:
+        """Return the snapshot belonging to the displayed execution mode."""
+
+        if self.scenario_mode_active and self._scenario_progress is not None:
+            return self._scenario_progress.latest_snapshot
+        return self.service.get_latest_snapshot()
+
+    def get_recent_events(self) -> tuple[SimulationEvent, ...]:
+        """Return events belonging to the displayed execution mode."""
+
+        if self.scenario_mode_active and self._scenario_progress is not None:
+            return self._scenario_progress.recent_events
+        return tuple(self.service.get_recent_events())
+
+    def close(self) -> None:
+        """Finalize active dashboard-owned execution and recording resources."""
+
+        if self.scenario_is_running:
+            self.cancel_scenario()
+        self.service.close(completed=True)
+
+    def _advance_scenario(
+        self,
+        elapsed_wall_time_s: float,
+    ) -> EngineSimulationSnapshot:
+        """Advance the active scenario at its configured fixed time step."""
+
+        if self._scenario_runner is None or self._scenario_progress is None:
+            raise RuntimeError("scenario mode has no prepared scenario")
+
+        scenario_time_step_s = (
+            self.selected_scenario.time_step_s or self.time_step_s
+        )
+        self._accumulated_time_s += min(
+            elapsed_wall_time_s,
+            self.maximum_catch_up_s,
+        )
+        while (
+            self._accumulated_time_s >= scenario_time_step_s
+            and self.scenario_is_running
+        ):
+            self._scenario_progress = (
+                self._scenario_runner.step_scenario()
+            )
+            self._scenario_result = self._scenario_runner.result
+            self._append_scenario_snapshot()
+            self._accumulated_time_s -= scenario_time_step_s
+
+        return self._scenario_progress.latest_snapshot
+
+    def _append_scenario_snapshot(self) -> None:
+        """Append a scenario snapshot once while preserving bounded history."""
+
+        assert self._scenario_progress is not None
+        snapshot = self._scenario_progress.latest_snapshot
+        if (
+            self.history.times_s
+            and self.history.times_s[-1] == snapshot.simulation_time_s
+        ):
+            return
+        self.history.append(snapshot)
