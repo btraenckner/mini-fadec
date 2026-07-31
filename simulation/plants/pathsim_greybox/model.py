@@ -42,6 +42,7 @@ class PathSimGreyBoxEngineModel:
         self._latest_step_success = True
         self._latest_error_indicator: float | None = None
         self._latest_internal_substeps = 0
+        self._latest_fixed_step_s = 0.0
         self._latest_inputs = self._zero_inputs(self._ambient)
         initial_state = self._initial_state(self._ambient)
         self._adapter = PathSimEngineAdapter(
@@ -89,6 +90,7 @@ class PathSimGreyBoxEngineModel:
         self._latest_step_success = True
         self._latest_error_indicator = None
         self._latest_internal_substeps = 0
+        self._latest_fixed_step_s = 0.0
         self._latest_inputs = self._zero_inputs(self._ambient)
         self._state = self._engine_state(initial_state)
         self._latest_terms = calculate_algebraic_terms(
@@ -156,6 +158,7 @@ class PathSimGreyBoxEngineModel:
         self._latest_step_success = result.success
         self._latest_error_indicator = result.error_indicator
         self._latest_internal_substeps = result.internal_substeps
+        self._latest_fixed_step_s = time_step_s / result.internal_substeps
         return self._latest_outputs
 
     def get_diagnostics(self) -> PlantDiagnostics:
@@ -178,7 +181,10 @@ class PathSimGreyBoxEngineModel:
                 solver_id=self.configuration.solver.solver_id,
                 solver_mode="fixed explicit",
                 fixed_step_s=self._effective_fixed_step_s(),
-                internal_substep_count=self._latest_internal_substeps,
+                internal_substep_count=(
+                    self._latest_internal_substeps
+                    or self.configuration.solver.internal_substep_count
+                ),
                 effective_fuel=integrated_state.effective_fuel,
                 normalized_speed=integrated_state.normalized_speed,
                 gas_temperature_c=integrated_state.gas_temperature_c,
@@ -244,10 +250,11 @@ class PathSimGreyBoxEngineModel:
         return GreyBoxStateVector(
             effective_fuel=initial.effective_fuel,
             normalized_speed=initial.normalized_speed,
-            gas_temperature_c=(
+            gas_temperature_c=max(
+                self.configuration.minimum_gas_temperature_c,
                 ambient.temperature_c
                 if initial.gas_temperature_c is None
-                else initial.gas_temperature_c
+                else initial.gas_temperature_c,
             ),
         )
 
@@ -263,13 +270,7 @@ class PathSimGreyBoxEngineModel:
     def _effective_fixed_step_s(self) -> float:
         if self.configuration.solver.internal_step_s is not None:
             return self.configuration.solver.internal_step_s
-        if self._latest_internal_substeps > 0:
-            return (
-                self._adapter.time_s / self._adapter.solver_step_count
-                if self._adapter.solver_step_count > 0
-                else 0.0
-            )
-        return 0.0
+        return self._latest_fixed_step_s
 
     @staticmethod
     def _zero_inputs(ambient: AmbientConditions) -> GreyBoxInputs:

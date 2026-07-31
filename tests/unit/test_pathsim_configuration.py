@@ -8,6 +8,7 @@ import pytest
 from simulation.plants.config import PlantSelectionConfig
 from simulation.plants.pathsim_greybox.config import (
     PathSimGreyBoxConfig,
+    PathSimInitialConditions,
     PathSimSolverConfig,
 )
 from simulation.plants.types import PlantModelKind
@@ -74,3 +75,12 @@ def test_default_configuration_objects_are_independent() -> None:
         first.pathsim.initial_conditions
         is not second.pathsim.initial_conditions
     )
+
+
+def test_initial_temperature_below_configured_bound_is_rejected() -> None:
+    with pytest.raises(ValueError, match="below minimum"):
+        PathSimGreyBoxConfig(
+            initial_conditions=PathSimInitialConditions(
+                gas_temperature_c=-90.0
+            )
+        )

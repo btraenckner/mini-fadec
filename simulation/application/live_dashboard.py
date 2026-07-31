@@ -404,11 +404,11 @@ class LiveEngineDashboard:
             0.595,
             "",
             transform=panel_axis.transAxes,
-            fontsize=6.15,
+            fontsize=5.6,
             family="monospace",
             color=self._MUTED_TEXT_COLOR,
             verticalalignment="top",
-            linespacing=1.22,
+            linespacing=1.12,
         )
         panel_axis.text(
             0.535,
@@ -1672,9 +1672,6 @@ class LiveEngineDashboard:
             return "Configuration unavailable"
         lines: list[str] = []
         for name, value in cls._flatten_configuration(configuration):
-            if len(lines) >= 18:
-                lines.append("… additional values in run metadata")
-                break
             lines.append(
                 f"{name[:31]:31s} {str(value):>10s} {cls._parameter_unit(name)}"
             )

@@ -155,3 +155,11 @@ class PathSimGreyBoxConfig:
             raise ValueError(
                 "initial normalized_speed exceeds maximum_normalized_speed"
             )
+        if (
+            self.initial_conditions.gas_temperature_c is not None
+            and self.initial_conditions.gas_temperature_c
+            < self.minimum_gas_temperature_c
+        ):
+            raise ValueError(
+                "initial gas_temperature_c is below minimum_gas_temperature_c"
+            )
