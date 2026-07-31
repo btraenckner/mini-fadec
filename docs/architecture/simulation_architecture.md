@@ -45,6 +45,8 @@ and simulation-only diagnostic comparisons use truth directly.
 - `simulation/protection/` estimates rotor acceleration, evaluates EGT,
   acceleration, deceleration, and overspeed protection, and centrally
   arbitrates the final fuel command.
+- `simulation/scheduling/` owns immutable periodic-task definitions,
+  integer-tick release logic, timing presets, and runtime diagnostics.
 - `simulation/application/` composes the components and provides terminal and
   graphical interactive applications.
 - `simulation/telemetry/` owns the canonical runtime snapshot, typed events,
@@ -59,30 +61,33 @@ closed-loop examples route feedback through fault injection and validation.
 
 ## Sensor Model
 
-Rotor speed and EGT have independent typed configuration. Each channel applies
-the following explicit sequence:
+Rotor speed and EGT have independent typed signal-effect configuration. Each
+central sensor-task release applies the following explicit sequence:
 
 1. Read the true physical value.
 2. Add constant bias.
 3. Add optional Gaussian noise.
 4. Quantize around zero when the quantization step is nonzero.
 5. Clamp to the measurable range.
-6. Publish at the channel sample period and hold between samples.
+6. Publish both channels together.
 
-The first update publishes both channels immediately. Later updates use
-independent accumulated sample timing, so one channel may update while the
-other holds its previous value.
+The sensor model contains no private elapsed-time accumulator. The central
+scheduler decides when `measure()` is called, and the coordinator holds its
+result until the next sensor-task release. Legacy channel
+`sample_period_s` values remain available as modelling metadata but do not
+create a second scheduling authority.
 
 Each sensor-model instance owns its random generator; global random state is
 not used. A fixed seed gives repeatable measurements and simulation runs.
 Setting the seed to `None` enables non-reproducible demonstration noise.
-Reset clears retained measurements and timers and restores the initial random
-state without resetting the engine plant.
+Reset clears retained measurements and restores the initial random state
+without resetting the engine plant.
 
 The default values are initial modelling assumptions, not validated hardware
-specifications. Rotor speed uses 50 rpm noise, 10 rpm quantization, a
-0 to 150,000 rpm range, and a 0.01 s sample period. EGT uses 1 °C noise,
-0.5 °C quantization, a -50 to 1,000 °C range, and a 0.02 s sample period.
+specifications. Rotor speed uses 50 rpm noise, 10 rpm quantization, and a
+0 to 150,000 rpm range. EGT uses 1 °C noise, 0.5 °C quantization, and a
+-50 to 1,000 °C range. The active scheduler preset defines their common
+runtime release period.
 
 ## Fault Injection
 
@@ -212,29 +217,87 @@ All filter constants, limiter thresholds, ratios, and slew rates in this
 section are unvalidated grey-box simulation assumptions, not certified engine
 limits.
 
-## Fixed-Step Execution
+## Deterministic Multi-Rate Scheduling
 
-For each coordinated simulation step:
+`DeterministicScheduler` is the only logical execution authority. Time is an
+integer base-tick index; authoritative simulation time is derived as
+`tick * base_tick_s`. Periods and phase offsets are validated as exact integer
+multiples when configuration is constructed. No floating-point deadline
+accumulation, component-owned timer, dashboard timer, or scenario-specific
+stepping loop releases FADEC work.
 
-1. Sample or retain nominal sensor signals.
-2. Apply active simulation-only faults.
-3. Validate raw measurements and update channel health.
-4. Determine warnings, automatic FAULT request, and safe fuel cutoff.
-5. Evaluate operating-state transitions using validated conditions.
-6. Calculate requested fuel from startup strategy or closed-loop control.
-7. Evaluate centralized fuel protection using validated data and operating
-   context.
-8. Advance the physical engine model with the manager-approved actuator
-   command.
-9. Record truth, raw and validated values, diagnostics, events, and outputs.
+The execution convention is `SAMPLE_CONTROL_THEN_INTEGRATE`. Tasks released on
+the same tick execute by explicit priority, then stable name:
+
+1. command capture,
+2. operating-state supervision,
+3. sensor sampling and fault injection,
+4. signal validation and sensor-fault response,
+5. speed controller,
+6. centralized protection,
+7. final actuator application,
+8. one plant integration,
+9. coherent snapshot publication,
+10. event monitoring,
+11. telemetry publication,
+12. dashboard publication.
+
+Every task receives its own configured effective period. Controller integration
+uses the controller period, protection filters use the protection period,
+validation persistence uses the validation period, and the plant is integrated
+exactly once per plant release. Outputs are retained between releases: sensor
+data, validated data, requested fuel, protected fuel, and applied actuator
+commands all have explicit sample-and-hold behavior. Hard cutoff conditions
+override a held normal fuel demand at the next actuator release.
+
+The nominal development preset is:
+
+| Task | Period | Phase | Priority |
+|---|---:|---:|---:|
+| Command | 1 ms | 0 ms | 10 |
+| State machine | 20 ms | 0 ms | 20 |
+| Sensor | 5 ms | 0 ms | 30 |
+| Validation | 5 ms | 0 ms | 40 |
+| Controller | 10 ms | 0 ms | 50 |
+| Protection | 5 ms | 0 ms | 60 |
+| Actuator | 5 ms | 0 ms | 70 |
+| Plant | 1 ms | 0 ms | 80 |
+| Snapshot | 5 ms | 0 ms | 90 |
+| Event monitor | 5 ms | 0 ms | 100 |
+| Telemetry | 50 ms | 0 ms | 110 |
+| Dashboard | 50 ms | 0 ms | 120 |
+
+Tick zero is a valid release. Non-zero phase offsets are supported and tested;
+priority remains authoritative when phased tasks coincide. The `single-rate`,
+`nominal-multirate`, `slow-controller`, `slow-sensors`, and `stress-timing`
+presets are independently constructed immutable values. Single-rate and
+nominal multi-rate are mandatory regression presets. Coarser presets are
+explicit experimental sensitivity configurations and are never defaults.
+
+Diagnostics expose the active preset, base tick, current tick and time, last
+same-tick order, missed-release total, and per-task period, phase, priority,
+release and execution counts, last execution, next release, skipped
+executions, and missed releases. Logical missed releases occur only if a
+caller deliberately advances tick state without processing intervening
+releases; normal unpaced execution processes every tick.
+
+`SimulationService.step_one_tick()` is the shared primitive for manual,
+scenario, and dashboard adapters. The older `step(time_step_s)` API remains a
+compatibility grouping operation and accepts only exact base-tick multiples.
+Changing presets constructs a fresh coordinator and clears retained timing
+and sample-and-hold state. It is allowed only while the engine is OFF and
+recording is inactive; rejected and accepted changes produce structured
+scheduler events.
 
 ## Runtime Observability and Run Recording
 
 `SimulationSnapshot` is the one canonical observable representation of a
-simulation sampling instant. The coordinator constructs it after a complete
-fixed step and synchronously publishes the same immutable value to registered
-`SnapshotSink` adapters. Terminal status, run recording, automated scenarios,
-and dashboard views therefore do not reconstruct signals from component
+snapshot-task release. The coordinator constructs it after plant integration
+and publishes the same immutable value to registered `SnapshotSink` adapters.
+Telemetry and dashboard sinks have separate scheduler-controlled release
+tasks and consume the latest held snapshot; their rates cannot execute the
+plant or FADEC. Terminal status, run recording, automated scenarios, and
+dashboard views therefore do not reconstruct signals from component
 internals. Truth, raw measurements, validated signals, requested fuel,
 protection candidates, and final applied fuel remain explicitly distinguished.
 Unavailable sensor and derived values remain `None`; serializers do not turn
@@ -279,13 +342,19 @@ recording commands during that mode, so conflicting manual widgets are
 disabled until the run finishes or is cancelled and the operator switches
 back to manual mode.
 
+The dashboard timing overlay displays the active preset, base tick, current
+logical time and tick, missed releases, and the complete per-task timing
+table. Its preset selector is enabled only while execution is stopped. The
+overlay refreshes at the UI rate and is strictly observational; it never
+releases control or plant tasks.
+
 ### Telemetry and event schemas
 
 Snapshot serialization uses an explicit ordered `TELEMETRY_FIELDS` schema.
 Enums become their stable string values, immutable parameter and diagnostic
 tuples become compact JSON, and optional values become empty CSV cells while
 remaining `None` in the Python API. The current telemetry schema version is
-`1.0`. Renaming, removing, or changing the meaning of a field requires a
+`1.1`. Renaming, removing, or changing the meaning of a field requires a
 schema-version change; compatible field additions require deliberate review
 of the explicit header.
 
@@ -301,11 +370,11 @@ independently at `1.0`.
 
 ### Deterministic sampling and recorder lifecycle
 
-`RunRecorder` may receive every coordinated snapshot but samples according to
-simulation time, not wall-clock pacing. The first snapshot is written
-immediately. Later rows are written only after configurable sampling deadlines
-(0.05 s by default); deadline advancement accounts for skipped periods and a
-small numeric tolerance prevents accumulated floating-point drift. Identical
+`RunRecorder` writes the initial snapshot immediately and thereafter receives
+held snapshots only from the central telemetry task (50 ms in the nominal
+preset). Its compatibility `publish()` path retains deterministic
+simulation-time sampling for adapters outside the centrally scheduled
+composition. Identical
 initial state, configuration, random seed, time step, and operator sequence
 therefore produce equivalent telemetry and event CSV content.
 
@@ -408,8 +477,8 @@ tuples, tags, expected terminal condition, narrow configuration overrides, and
 an optional deterministic seed. Construction rejects empty IDs, nonpositive
 timing, duplicate action or requirement IDs, invalid triggers, unknown action
 dependencies, and unsupported overrides. Supported overrides are currently
-the artifact base directory, telemetry sampling period, and sensor random
-seed; shared global configuration is never mutated.
+the artifact base directory, telemetry sampling period, sensor random seed,
+and scheduler preset; shared global configuration is never mutated.
 
 Actions include engine start, normalized throttle changes, shutdown, reset,
 manual fault request, typed sensor-fault injection and clearing, markers, and
@@ -465,13 +534,14 @@ Scenario(
 
 `ScenarioRunner` creates a fresh `SimulationService` composition for every
 scenario, optionally starts the Sprint 11 recorder, executes due actions,
-steps the service, captures the canonical snapshots and typed events, checks
+steps the service one scheduler base tick at a time, captures the canonical
+snapshots and typed events, checks
 termination, evaluates requirements, finalizes recording, and writes reports.
 Its default loop has no wall-clock sleeping. Scenario triggers, timeouts,
 settling windows, response times, maximum duration, and event times use only
 simulation time. Wall-clock time is limited to run naming, generated-at
 metadata, execution-performance measurement, and the real-time-factor report.
-An explicitly enabled paced mode may sleep once per simulation step.
+An explicitly enabled paced mode may sleep once per scheduler base tick.
 
 The synchronous `run_scenario(scenario)` function is the simplest entry point.
 The live dashboard uses `prepare_scenario`, `step_scenario`,
@@ -484,7 +554,8 @@ requirement status. All collections returned to clients are immutable tuples.
 
 With the same scenario, seed, time step, initial composition, and
 configuration, action order and time, snapshot and event sequences,
-requirement outcomes, and overall result are deterministic. Normalization
+requirement outcomes, scheduler counts and ordering, and overall result are
+deterministic. Normalization
 removes only documented nondeterministic fields such as wall-clock execution
 duration, real-time factor, and filesystem paths.
 
@@ -493,7 +564,8 @@ duration, real-time factor, and filesystem paths.
 Requirements have stable IDs, descriptions, categories, criticality, an
 explicit evaluator, and optional applicability text. Categories cover state
 sequence and timing, signal limits, steady state, transients, protection,
-sensor-fault response, actuator safety, and logical invariants. Criticality is
+sensor-fault response, actuator safety, logical invariants, and scheduler
+timing. Criticality is
 `INFO`, `MINOR`, `MAJOR`, or `CRITICAL`; these are project classifications and
 do not claim aerospace certification compliance.
 
@@ -501,8 +573,10 @@ The initial evaluator set covers state reached, state reached within a time,
 state transition sequence, signal maximum and minimum, signal band, settling
 time with continuous dwell, overshoot, acceleration limit, actuator
 invariants, event observed or absent, sensor fault response time, fuel-cutoff
-response, limiter intervention, sensor-health transition, and explicit
-no-truth-fallback behavior. Missing evidence becomes `NOT_EVALUATED` or
+response, limiter intervention, sensor-health transition, explicit
+no-truth-fallback behavior, scheduler preset match, exact task count and rate
+ratio, no missed release, and deterministic task order. Missing evidence
+becomes `NOT_EVALUATED` or
 `NOT_APPLICABLE`; evaluator exceptions become `ERROR` and can never pass.
 
 `RequirementEvidence` uses explicit optional fields for measured and expected
@@ -520,18 +594,25 @@ explicit cancellation returns `CANCELLED` and still finalizes artifacts.
 
 ### Scenario library, CLI, and artifacts
 
-The explicit registry currently contains normal lifecycle, large throttle
-step, rapid throttle reduction, RPM dropout, EGT dropout, soft overspeed, and
-hard overspeed scenarios. Fault and overspeed scenarios create their inputs
-through the existing typed sensor-fault path so validation and protection are
-not bypassed.
+The mandatory registry contains normal lifecycle, large throttle step, rapid
+throttle reduction, RPM dropout, EGT dropout, soft overspeed, hard overspeed,
+and four scheduler regressions: single-rate lifecycle, nominal multi-rate
+lifecycle, nominal multi-rate throttle transient, and nominal multi-rate RPM
+dropout. Experimental slow-controller and slow-sensor scenarios are available
+individually. The slow-sensor case intentionally retains the 10 ms cutoff
+requirement to expose degraded latency and is excluded from mandatory
+`run-all`. Fault and overspeed scenarios create their inputs through the
+existing typed sensor-fault path so validation and protection are not
+bypassed.
 
 Use the non-interactive CLI as follows:
 
 ```text
 python -m simulation.scenarios.cli list
 python -m simulation.scenarios.cli show normal_start_run_shutdown
-python -m simulation.scenarios.cli run normal_start_run_shutdown
+python -m simulation.scenarios.cli presets
+python -m simulation.scenarios.cli run normal_start_run_shutdown --scheduler nominal-multirate
+python -m simulation.scenarios.cli run SCN-SCHED-001
 python -m simulation.scenarios.cli run-all
 ```
 
@@ -558,7 +639,8 @@ same report artifact structure without duplicating CSV-writing logic.
 
 `scenario.json` uses explicit action, trigger, condition, and evaluator type
 names plus parameters. `requirements.json` contains schema version, aggregate
-status and counts, action results, requirement evidence, and artifact paths.
+status and counts, scheduler preset and full task configuration, action
+results, requirement evidence, and artifact paths.
 JSON serialization rejects nonstandard NaN and Infinity values by converting
 unavailable numeric evidence to `null`. `report.md` summarizes execution,
 actions, requirements, failures, evidence, source revision, and artifact
@@ -596,6 +678,13 @@ comparison of loaded historical runs. Partial progress reports requirement
 definitions as not yet evaluated; authoritative evaluation is post-run.
 Wall-clock and Git metadata are identification aids rather than deterministic
 comparison fields.
+
+The scheduler is a deterministic logical-time development model, not an
+operating-system real-time scheduler. It does not model execution duration,
+jitter, preemption, CPU overload, deadlines, or hardware interrupts. Current
+periods, priorities, and phase choices are unvalidated development assumptions.
+The dashboard is refreshed by Matplotlib wall-clock callbacks, but those
+callbacks only request logical base ticks and render held results.
 
 This framework is a simulation and development verification environment. It
 is not a certified aerospace verification tool and does not implement a
