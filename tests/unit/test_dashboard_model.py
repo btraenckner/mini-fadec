@@ -1,15 +1,22 @@
 """Unit tests for live dashboard controls and telemetry history."""
 
+from pathlib import Path
+
 import pytest
 
 from simulation.application.dashboard_model import (
     DashboardControls,
     DashboardFaultType,
     DashboardHistory,
+    DashboardOperatingMode,
     DashboardSensorFaultControls,
     DashboardSimulation,
 )
 from simulation.application.engine_simulation import EngineSimulationCoordinator
+from simulation.scenarios.actions import AddMarkerAction
+from simulation.scenarios.definitions import Scenario
+from simulation.scenarios.runner import ScenarioExecutionState
+from simulation.scenarios.triggers import AtTimeTrigger
 from simulation.sensors.fault_injection import (
     BiasSensorFault,
     DriftSensorFault,
@@ -20,6 +27,29 @@ from simulation.sensors.fault_injection import (
     SensorFaultDefinition,
     StuckSensorFault,
 )
+from simulation.verification.results import ScenarioOverallStatus
+
+
+def _short_dashboard_scenario(artifact_directory: str) -> Scenario:
+    return Scenario(
+        scenario_id="SCN-DASHBOARD-TEST",
+        name="dashboard_test",
+        description="Short deterministic dashboard scenario.",
+        max_duration_s=0.10,
+        time_step_s=0.01,
+        actions=(
+            AddMarkerAction(
+                action_id="complete",
+                description="Complete the short dashboard scenario",
+                trigger=AtTimeTrigger(0.02),
+                marker_text="dashboard scenario complete",
+            ),
+        ),
+        requirements=(),
+        configuration_overrides=(
+            ("artifact_base_directory", artifact_directory),
+        ),
+    )
 
 
 @pytest.mark.parametrize("channel", list(SensorChannel))
@@ -210,3 +240,50 @@ def test_dashboard_simulation_rejects_negative_elapsed_time() -> None:
         match="elapsed_wall_time_s must not be negative",
     ):
         dashboard_simulation.advance(elapsed_wall_time_s=-0.01)
+
+
+def test_dashboard_runs_selected_scenario_and_restores_manual_mode(
+    tmp_path: Path,
+) -> None:
+    scenario = _short_dashboard_scenario(str(tmp_path))
+    dashboard_simulation = DashboardSimulation(scenarios=(scenario,))
+
+    runner_snapshot = dashboard_simulation.enter_runner_mode()
+    initial_progress = dashboard_simulation.start_selected_scenario()
+    final_snapshot = dashboard_simulation.advance(0.03)
+
+    assert runner_snapshot.simulation_time_s == pytest.approx(0.0)
+    assert initial_progress.execution_state is ScenarioExecutionState.RUNNING
+    assert dashboard_simulation.operating_mode is DashboardOperatingMode.SCENARIO
+    assert dashboard_simulation.scenario_is_running is False
+    assert dashboard_simulation.scenario_progress is not None
+    assert dashboard_simulation.scenario_progress.execution_state is (
+        ScenarioExecutionState.COMPLETED
+    )
+    assert dashboard_simulation.scenario_result is not None
+    assert dashboard_simulation.scenario_result.overall_status is (
+        ScenarioOverallStatus.PASS
+    )
+    assert final_snapshot.simulation_time_s == pytest.approx(0.02)
+    assert dashboard_simulation.history.times_s == pytest.approx(
+        [0.0, 0.01, 0.02]
+    )
+
+    manual_snapshot = dashboard_simulation.return_to_manual_mode()
+
+    assert dashboard_simulation.operating_mode is DashboardOperatingMode.MANUAL
+    assert manual_snapshot.simulation_time_s == pytest.approx(0.0)
+    assert dashboard_simulation.history.times_s == pytest.approx([0.0])
+
+
+def test_dashboard_scenario_mode_rejects_conflicting_selection(
+    tmp_path: Path,
+) -> None:
+    scenario = _short_dashboard_scenario(str(tmp_path))
+    dashboard_simulation = DashboardSimulation(scenarios=(scenario,))
+    dashboard_simulation.start_selected_scenario()
+
+    with pytest.raises(RuntimeError, match="finish"):
+        dashboard_simulation.select_adjacent_scenario(1)
+
+    dashboard_simulation.cancel_scenario()

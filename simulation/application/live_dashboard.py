@@ -8,16 +8,19 @@ from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
 from matplotlib.patches import FancyBboxPatch
 from matplotlib.ticker import FuncFormatter
-from matplotlib.widgets import Button, RadioButtons, Slider, TextBox
+from matplotlib.widgets import AxesWidget, Button, RadioButtons, Slider, TextBox
 
 from simulation.application.dashboard_model import (
     DashboardFaultType,
+    DashboardOperatingMode,
     DashboardSimulation,
 )
 from simulation.application.engine_simulation import EngineSimulationSnapshot
 from simulation.operation.engine_state import EngineOperatingState
+from simulation.scenarios.runner import ScenarioExecutionState
 from simulation.sensors.fault_injection import SensorChannel
 from simulation.validation.sensor_validation import ChannelHealth
+from simulation.verification.results import ScenarioOverallStatus
 
 
 class LiveEngineDashboard:
@@ -57,7 +60,25 @@ class LiveEngineDashboard:
         self._create_status_panel()
         self._create_controls()
         self._create_sensor_fault_controls()
+        self._create_scenario_controls()
         self._create_signal_plots()
+        self._manual_control_widgets = (
+            self._throttle_slider,
+            self._start_button,
+            self._shutdown_button,
+            self._fault_button,
+            self._reset_button,
+            self._recording_run_name_text_box,
+            self._recording_start_button,
+            self._recording_stop_button,
+            self._fault_channel_selector,
+            self._fault_type_selector,
+            self._fault_value_text_box,
+            self._inject_sensor_fault_button,
+            self._clear_sensor_fault_button,
+            self._clear_all_sensor_faults_button,
+        )
+        self._update_runner_control_states()
 
         self._timer = self._figure.canvas.new_timer(
             interval=max(1, int(self.refresh_interval_s * 1_000.0))
@@ -65,7 +86,7 @@ class LiveEngineDashboard:
         self._timer.add_callback(self._on_timer)
         self._figure.canvas.mpl_connect("close_event", self._on_figure_close)
         self._refresh_dashboard(
-            self.dashboard_simulation.service.get_latest_snapshot()
+            self.dashboard_simulation.get_latest_snapshot()
         )
 
     @property
@@ -123,7 +144,7 @@ class LiveEngineDashboard:
             left=0.415,
             right=0.98,
             bottom=0.07,
-            top=0.91,
+            top=0.89,
             hspace=0.30,
         )
         figure.canvas.manager.set_window_title("Mini-FADEC Live Dashboard")
@@ -204,6 +225,75 @@ class LiveEngineDashboard:
             color=self._MUTED_TEXT_COLOR,
             wrap=True,
         )
+
+    def _create_scenario_controls(self) -> None:
+        """Create the mode switch, scenario dropdown, and runner controls."""
+
+        self._add_panel((0.408, 0.922, 0.572, 0.038))
+        self._mode_switch_button = self._create_button(
+            bounds=(0.417, 0.928, 0.095, 0.026),
+            label="MANUAL  ●○",
+            color="#234e70",
+            callback=self._on_mode_switch,
+        )
+        self._scenario_dropdown_button = self._create_button(
+            bounds=(0.520, 0.928, 0.205, 0.026),
+            label="",
+            color="#263950",
+            callback=self._on_scenario_dropdown,
+        )
+
+        scenario_labels = tuple(
+            f"{scenario.scenario_id} | "
+            f"{self._shorten(scenario.name.replace('_', ' '), 21)}"
+            for scenario in self.dashboard_simulation.scenarios
+        )
+        dropdown_axis = self._figure.add_axes((0.520, 0.700, 0.205, 0.218))
+        self._style_widget_axis(dropdown_axis)
+        dropdown_axis.set_zorder(20)
+        self._scenario_dropdown_selector = RadioButtons(
+            dropdown_axis,
+            scenario_labels,
+            active=0,
+            activecolor=self._ACCENT_COLOR,
+            radio_props={
+                "edgecolor": self._MUTED_TEXT_COLOR,
+                "linewidth": 0.8,
+                "s": 28.0,
+            },
+        )
+        for label in self._scenario_dropdown_selector.labels:
+            label.set_fontsize(7)
+            label.set_color(self._TEXT_COLOR)
+        self._scenario_dropdown_selector.on_clicked(
+            self._on_scenario_selected
+        )
+        dropdown_axis.set_visible(False)
+        self._scenario_dropdown_axis = dropdown_axis
+        self._scenario_dropdown_labels = scenario_labels
+
+        self._scenario_progress_text = self._figure.text(
+            0.735,
+            0.937,
+            "MANUAL CONTROL",
+            fontsize=6.8,
+            family="monospace",
+            color=self._MUTED_TEXT_COLOR,
+            verticalalignment="center",
+        )
+        self._run_scenario_button = self._create_button(
+            bounds=(0.840, 0.928, 0.050, 0.026),
+            label="RUN",
+            color="#176c54",
+            callback=self._on_run_scenario,
+        )
+        self._cancel_scenario_button = self._create_button(
+            bounds=(0.900, 0.928, 0.070, 0.026),
+            label="CANCEL",
+            color="#762f3a",
+            callback=self._on_cancel_scenario,
+        )
+        self._update_scenario_status()
 
     def _create_controls(self) -> None:
         """Create throttle lever and operator command buttons."""
@@ -821,6 +911,7 @@ class LiveEngineDashboard:
             axis.set_xlim(window_start_s, window_end_s)
 
         self._update_status(snapshot)
+        self._update_scenario_status()
         self._update_recording_status()
         self._figure.canvas.draw_idle()
 
@@ -859,7 +950,7 @@ class LiveEngineDashboard:
             f"Auto {self._on_off(snapshot.automatic_sensor_fault_request_active)}\n"
             f"Fuel req/allow  {snapshot.requested_fuel_command:.3f}/"
             f"{snapshot.allowed_fuel_command:.3f} | "
-            f"Throttle {self.dashboard_simulation.controls.throttle_command:.0%}\n"
+            f"Throttle {snapshot.throttle_demand:.0%}\n"
             f"Starter {self._on_off(snapshot.starter_commanded):>3s} | "
             f"Ignition {self._on_off(snapshot.ignition_commanded):>3s} | "
             f"EGT limit {self._on_off(snapshot.egt_limiter_active):>3s}\n"
@@ -874,7 +965,7 @@ class LiveEngineDashboard:
             )
             self._transition_text.set_color(self._ACCENT_COLOR)
 
-        events = self.dashboard_simulation.service.get_recent_events()
+        events = self.dashboard_simulation.get_recent_events()
         if (
             events
             and events[-1].event_sequence
@@ -888,9 +979,16 @@ class LiveEngineDashboard:
             self._transition_text.set_color(self._WARNING_COLOR)
             self._last_displayed_event_sequence = latest_event.event_sequence
 
+        self._update_throttle_lever(snapshot.throttle_demand)
+        self._throttle_value_text.set_text(
+            f"{snapshot.throttle_demand:.0%}"
+        )
+
     def _on_throttle_changed(self, throttle_command: float) -> None:
         """Apply a persistent throttle demand from the slider."""
 
+        if not self._manual_control_available():
+            return
         self.dashboard_simulation.controls.set_throttle(throttle_command)
         self._update_throttle_lever(throttle_command)
         self._throttle_value_text.set_text(f"{throttle_command:.0%}")
@@ -936,6 +1034,8 @@ class LiveEngineDashboard:
     def _on_inject_sensor_fault(self, _event: object) -> None:
         """Inject or replace the selected fault and report validation errors."""
 
+        if not self._manual_control_available():
+            return
         fault_controls = self.dashboard_simulation.sensor_fault_controls
         fault_controls.set_value_text(self._fault_value_text_box.text)
         try:
@@ -953,6 +1053,8 @@ class LiveEngineDashboard:
     def _on_clear_sensor_fault(self, _event: object) -> None:
         """Clear the selected channel and expose validator recovery."""
 
+        if not self._manual_control_available():
+            return
         message = self.dashboard_simulation.sensor_fault_controls.clear_selected(
             self.dashboard_simulation.service
         )
@@ -961,6 +1063,8 @@ class LiveEngineDashboard:
     def _on_clear_all_sensor_faults(self, _event: object) -> None:
         """Clear all channel faults and expose validator recovery."""
 
+        if not self._manual_control_available():
+            return
         message = self.dashboard_simulation.sensor_fault_controls.clear_all(
             self.dashboard_simulation.service
         )
@@ -976,26 +1080,36 @@ class LiveEngineDashboard:
     def _on_start(self, _event: object) -> None:
         """Queue a one-shot startup request."""
 
+        if not self._manual_control_available():
+            return
         self.dashboard_simulation.controls.request_startup()
 
     def _on_shutdown(self, _event: object) -> None:
         """Queue a one-shot shutdown request."""
 
+        if not self._manual_control_available():
+            return
         self.dashboard_simulation.controls.request_shutdown()
 
     def _on_fault(self, _event: object) -> None:
         """Queue a one-shot fault request."""
 
+        if not self._manual_control_available():
+            return
         self.dashboard_simulation.controls.request_fault()
 
     def _on_reset(self, _event: object) -> None:
         """Queue a one-shot fault-reset request."""
 
+        if not self._manual_control_available():
+            return
         self.dashboard_simulation.controls.request_reset()
 
     def _on_start_recording(self, _event: object) -> None:
         """Start recording using the run name entered in the dashboard."""
 
+        if not self._manual_control_available():
+            return
         run_name = self._recording_run_name_text_box.text.strip() or None
         try:
             run_directory = self.dashboard_simulation.service.start_recording(
@@ -1016,6 +1130,8 @@ class LiveEngineDashboard:
     def _on_stop_recording(self, _event: object) -> None:
         """Finalize the active dashboard recording safely."""
 
+        if not self._manual_control_available():
+            return
         try:
             summary = self.dashboard_simulation.service.stop_recording()
         except OSError as error:
@@ -1040,6 +1156,26 @@ class LiveEngineDashboard:
 
     def _update_recording_status(self) -> None:
         """Refresh recording activity and persisted row counters."""
+
+        if self.dashboard_simulation.scenario_mode_active:
+            progress = self.dashboard_simulation.scenario_progress
+            result = self.dashboard_simulation.scenario_result
+            if progress is not None and progress.current_recording_directory:
+                status_text = "● SCN REC"
+                status_color = self._DANGER_COLOR
+            elif result is not None and result.run_directory is not None:
+                status_text = "SCN SAVED"
+                status_color = (
+                    self._SUCCESS_COLOR
+                    if result.overall_status is ScenarioOverallStatus.PASS
+                    else self._WARNING_COLOR
+                )
+            else:
+                status_text = "SCN READY"
+                status_color = self._MUTED_TEXT_COLOR
+            self._recording_status_text.set_text(status_text)
+            self._recording_status_text.set_color(status_color)
+            return
 
         service = self.dashboard_simulation.service
         status = service.get_recording_status()
@@ -1072,13 +1208,256 @@ class LiveEngineDashboard:
         """Close an active recording when the dashboard itself closes."""
 
         try:
-            self.dashboard_simulation.service.close(completed=True)
+            self.dashboard_simulation.close()
         except OSError as error:
             self._set_recording_feedback(
                 f"Recording cleanup error: {error}",
                 self._DANGER_COLOR,
             )
         self._update_recording_status()
+
+    def _on_mode_switch(self, _event: object) -> None:
+        """Toggle explicitly between manual and scenario-runner ownership."""
+
+        if self.dashboard_simulation.scenario_mode_active:
+            try:
+                snapshot = self.dashboard_simulation.return_to_manual_mode()
+            except RuntimeError as error:
+                self._set_scenario_feedback(str(error), self._WARNING_COLOR)
+                return
+            self._hide_scenario_dropdown()
+            self._last_displayed_event_sequence = 0
+            self._set_manual_controls_active(True)
+            self._set_scenario_feedback(
+                "Manual control restored",
+                self._SUCCESS_COLOR,
+            )
+        else:
+            try:
+                snapshot = self.dashboard_simulation.enter_runner_mode()
+            except RuntimeError as error:
+                self._set_scenario_feedback(str(error), self._WARNING_COLOR)
+                return
+            self._set_manual_controls_active(False)
+            self._set_scenario_feedback(
+                "Runner mode ready  /  choose a scenario",
+                self._ACCENT_COLOR,
+            )
+        self._update_runner_control_states()
+        self._refresh_dashboard(snapshot)
+
+    def _on_scenario_dropdown(self, _event: object) -> None:
+        """Open or close the scenario selection dropdown."""
+
+        if (
+            not self.dashboard_simulation.scenario_mode_active
+            or self.dashboard_simulation.scenario_is_running
+        ):
+            return
+        is_open = self._scenario_dropdown_axis.get_visible()
+        self._scenario_dropdown_axis.set_visible(not is_open)
+        self._scenario_dropdown_selector.active = not is_open
+        self._figure.canvas.draw_idle()
+
+    def _on_scenario_selected(self, scenario_label: str) -> None:
+        """Select one scenario from the runner-mode dropdown."""
+
+        try:
+            scenario_index = self._scenario_dropdown_labels.index(
+                scenario_label
+            )
+            scenario = self.dashboard_simulation.select_scenario(
+                scenario_index
+            )
+        except (RuntimeError, ValueError) as error:
+            self._set_scenario_feedback(str(error), self._WARNING_COLOR)
+            return
+        self._hide_scenario_dropdown()
+        self._set_scenario_feedback(
+            f"Selected {scenario.scenario_id}  /  "
+            f"{self._shorten(scenario.name, 24)}",
+            self._MUTED_TEXT_COLOR,
+        )
+        self._update_scenario_status()
+        self._update_recording_status()
+        self._figure.canvas.draw_idle()
+
+    def _on_run_scenario(self, _event: object) -> None:
+        """Start the selected scenario and lock conflicting manual controls."""
+
+        if not self.dashboard_simulation.scenario_mode_active:
+            self._set_scenario_feedback(
+                "Switch to runner mode before starting a scenario",
+                self._WARNING_COLOR,
+            )
+            return
+        self._hide_scenario_dropdown()
+        try:
+            progress = self.dashboard_simulation.start_selected_scenario()
+        except RuntimeError as error:
+            self._set_scenario_feedback(str(error), self._DANGER_COLOR)
+            return
+        self._last_displayed_event_sequence = 0
+        self._set_manual_controls_active(False)
+        self._update_runner_control_states()
+        self._set_scenario_feedback(
+            f"Scenario started  /  {progress.scenario_id}",
+            self._ACCENT_COLOR,
+        )
+        self._refresh_dashboard(progress.latest_snapshot)
+
+    def _on_cancel_scenario(self, _event: object) -> None:
+        """Cancel a running scenario and retain its report for inspection."""
+
+        if not self.dashboard_simulation.scenario_is_running:
+            self._set_scenario_feedback(
+                "No scenario is currently running",
+                self._MUTED_TEXT_COLOR,
+            )
+            return
+        result = self.dashboard_simulation.cancel_scenario()
+        self._update_runner_control_states()
+        self._set_scenario_feedback(
+            f"Scenario cancelled  /  report in "
+            f"{self._result_directory_name(result.run_directory)}",
+            self._WARNING_COLOR,
+        )
+        self._refresh_dashboard(
+            self.dashboard_simulation.get_latest_snapshot()
+        )
+
+    def _update_scenario_status(self) -> None:
+        """Refresh selection, progress, action counts, and final verdict."""
+
+        scenario = self.dashboard_simulation.selected_scenario
+        compact_name = scenario.name.replace("_", " ")
+        self._scenario_dropdown_button.label.set_text(
+            f"{self._shorten(compact_name, 24)}  ▼"
+        )
+
+        progress = self.dashboard_simulation.scenario_progress
+        result = self.dashboard_simulation.scenario_result
+        if (
+            self.dashboard_simulation.operating_mode
+            is DashboardOperatingMode.MANUAL
+        ):
+            status_text = "MANUAL CONTROL"
+            status_color = self._MUTED_TEXT_COLOR
+        elif progress is not None and progress.execution_state is (
+            ScenarioExecutionState.RUNNING
+        ):
+            executed_actions = progress.completed_action_count
+            total_actions = (
+                progress.completed_action_count
+                + progress.pending_action_count
+                + progress.failed_action_count
+            )
+            status_text = (
+                f"RUN {progress.current_simulation_time_s:4.1f}/"
+                f"{progress.maximum_duration_s:g}s  "
+                f"A {executed_actions}/{total_actions}"
+            )
+            status_color = self._ACCENT_COLOR
+        elif result is not None:
+            status_text = (
+                f"{result.overall_status.value}  "
+                f"R {result.passed_requirement_count}/"
+                f"{len(result.requirement_results)}"
+            )
+            status_color = (
+                self._SUCCESS_COLOR
+                if result.overall_status is ScenarioOverallStatus.PASS
+                else self._DANGER_COLOR
+            )
+        elif progress is not None:
+            status_text = progress.execution_state.value
+            status_color = self._WARNING_COLOR
+        else:
+            status_text = "SCENARIO READY"
+            status_color = self._MUTED_TEXT_COLOR
+
+        self._scenario_progress_text.set_text(status_text)
+        self._scenario_progress_text.set_color(status_color)
+        self._mode_switch_button.label.set_text(
+            "RUNNER  ○●"
+            if self.dashboard_simulation.scenario_mode_active
+            else "MANUAL  ●○"
+        )
+        self._mode_switch_button.ax.set_facecolor(
+            "#176c54"
+            if self.dashboard_simulation.scenario_mode_active
+            else "#234e70"
+        )
+        if hasattr(self, "_manual_control_widgets"):
+            self._update_runner_control_states()
+
+    def _manual_control_available(self) -> bool:
+        """Reject direct commands while scenario actions own the simulation."""
+
+        if not self.dashboard_simulation.scenario_mode_active:
+            return True
+        self._set_scenario_feedback(
+            "Scenario mode owns engine and sensor commands",
+            self._WARNING_COLOR,
+        )
+        return False
+
+    def _set_manual_controls_active(self, active: bool) -> None:
+        """Enable or visually mute controls that conflict with scenarios."""
+
+        for widget in self._manual_control_widgets:
+            widget.active = active
+            widget.ax.set_alpha(1.0 if active else 0.35)
+
+    def _update_runner_control_states(self) -> None:
+        """Enable only runner widgets valid for the current execution state."""
+
+        runner_mode = self.dashboard_simulation.scenario_mode_active
+        running = self.dashboard_simulation.scenario_is_running
+        self._set_widget_active(
+            self._mode_switch_button,
+            not running,
+        )
+        self._set_widget_active(
+            self._scenario_dropdown_button,
+            runner_mode and not running,
+        )
+        self._set_widget_active(
+            self._run_scenario_button,
+            runner_mode and not running,
+        )
+        self._set_widget_active(
+            self._cancel_scenario_button,
+            runner_mode and running,
+        )
+        if not runner_mode or running:
+            self._hide_scenario_dropdown()
+
+    def _hide_scenario_dropdown(self) -> None:
+        """Close and deactivate the scenario dropdown overlay."""
+
+        self._scenario_dropdown_axis.set_visible(False)
+        self._scenario_dropdown_selector.active = False
+
+    @staticmethod
+    def _set_widget_active(widget: AxesWidget, active: bool) -> None:
+        """Set a Matplotlib widget's event and visual active state."""
+
+        widget.active = active
+        widget.ax.set_alpha(1.0 if active else 0.35)
+
+    def _set_scenario_feedback(self, message: str, color: str) -> None:
+        """Show immediate scenario-control feedback in the event field."""
+
+        self._transition_text.set_text(f"●  {message}")
+        self._transition_text.set_color(color)
+        self._figure.canvas.draw_idle()
+
+    @staticmethod
+    def _result_directory_name(run_directory: Path | None) -> str:
+        """Return a concise artifact directory name for scenario feedback."""
+
+        return run_directory.name if run_directory is not None else "artifacts"
 
     def _on_quit(self, _event: object) -> None:
         """Save the final view and close the dashboard."""
