@@ -112,7 +112,7 @@ def test_dashboard_uses_grouped_dark_theme_and_live_status_indicators() -> None:
     )
     assert "150k" in speed_tick_labels
     assert "150000" not in speed_tick_labels
-    assert len(dashboard._scenario_dropdown_labels) == 7
+    assert len(dashboard._scenario_dropdown_labels) == 13
     assert dashboard._scenario_dropdown_labels[0].startswith("SCN-NORMAL-001")
     assert dashboard._scenario_dropdown_button.active is False
 
@@ -132,6 +132,32 @@ def test_dashboard_uses_grouped_dark_theme_and_live_status_indicators() -> None:
     assert dashboard._sensor_health_text.get_bbox_patch().get_facecolor() == (
         to_rgba(dashboard._DANGER_COLOR)
     )
+    dashboard.close(save_result=False)
+
+
+def test_dashboard_timing_panel_displays_diagnostics_and_selects_preset() -> None:
+    dashboard = LiveEngineDashboard()
+
+    dashboard._on_timing_panel(None)
+
+    assert dashboard._timing_panel_axis.get_visible()
+    assert "nominal-multirate" in dashboard._timing_summary_text.get_text()
+    assert "TASK" in dashboard._timing_table_text.get_text()
+    assert "plant" in dashboard._timing_table_text.get_text()
+    assert "controller" in dashboard._timing_table_text.get_text()
+
+    labels = tuple(
+        label.get_text()
+        for label in dashboard._timing_preset_selector.labels
+    )
+    dashboard._timing_preset_selector.set_active(
+        labels.index("slow-controller")
+    )
+
+    assert dashboard.dashboard_simulation.selected_scheduler_preset == (
+        "slow-controller"
+    )
+    assert "slow-controller" in dashboard._timing_summary_text.get_text()
     dashboard.close(save_result=False)
 
 
@@ -312,8 +338,8 @@ def test_dashboard_starts_and_stops_named_recording(tmp_path: Path) -> None:
     final_status = service.get_recording_status()
     assert final_status is not None
     assert service.recorder.is_recording is False
-    assert final_status.telemetry_sample_count == 3
-    assert final_status.event_count == 2
+    assert final_status.telemetry_sample_count == 4
+    assert final_status.event_count == 3
     assert dashboard._recording_status_text.get_text().startswith("SAVED")
     assert (final_status.run_directory / "telemetry.csv").is_file()
     assert (final_status.run_directory / "events.csv").is_file()

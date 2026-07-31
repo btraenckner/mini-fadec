@@ -14,11 +14,16 @@ from simulation.application.simulation_service import SimulationService
 from simulation.operation.engine_state import EngineOperatingState
 from simulation.operation.state_machine import EngineOperationRequest
 from simulation.scenarios.definitions import Scenario
-from simulation.scenarios.library import list_scenarios
+from simulation.scenarios.library import list_all_scenarios
 from simulation.scenarios.runner import (
     ScenarioExecutionState,
     ScenarioProgress,
     ScenarioRunner,
+)
+from simulation.scheduling.diagnostics import SchedulerDiagnostics
+from simulation.scheduling.presets import (
+    get_scheduler_preset,
+    list_scheduler_presets,
 )
 from simulation.sensors.fault_injection import (
     BiasSensorFault,
@@ -418,11 +423,14 @@ class DashboardSimulation:
         self.time_step_s = time_step_s
         self.maximum_catch_up_s = maximum_catch_up_s
         self._accumulated_time_s = 0.0
-        self.scenarios = scenarios if scenarios is not None else list_scenarios()
+        self.scenarios = (
+            scenarios if scenarios is not None else list_all_scenarios()
+        )
         if not self.scenarios:
             raise ValueError("the dashboard requires at least one scenario")
-        self._scenario_runner_factory = (
-            scenario_runner_factory or ScenarioRunner
+        self._scenario_runner_factory = scenario_runner_factory
+        self._selected_scheduler_preset = (
+            self.service.coordinator.scheduler_config.preset_name
         )
         self.operating_mode = DashboardOperatingMode.MANUAL
         self._selected_scenario_index = 0
@@ -533,7 +541,13 @@ class DashboardSimulation:
                 "stop the manual recording before starting a scenario"
             )
 
-        self._scenario_runner = self._scenario_runner_factory()
+        self._scenario_runner = (
+            self._scenario_runner_factory()
+            if self._scenario_runner_factory is not None
+            else ScenarioRunner(
+                scheduler_preset=self._selected_scheduler_preset
+            )
+        )
         self._scenario_progress = self._scenario_runner.prepare_scenario(
             self.selected_scenario
         )
@@ -584,6 +598,42 @@ class DashboardSimulation:
             return self._scenario_progress.recent_events
         return tuple(self.service.get_recent_events())
 
+    @property
+    def selected_scheduler_preset(self) -> str:
+        """Return the timing preset selected for the next run."""
+
+        return self._selected_scheduler_preset
+
+    def available_scheduler_presets(self) -> tuple[str, ...]:
+        """Return stable preset names for dashboard selection."""
+
+        return tuple(
+            preset.preset_name for preset in list_scheduler_presets()
+        )
+
+    def select_scheduler_preset(self, preset_name: str) -> str:
+        """Select timing only while no manual or scenario run is active."""
+
+        if self.scenario_is_running:
+            raise RuntimeError(
+                "scheduler preset cannot change during a scenario"
+            )
+        get_scheduler_preset(preset_name)
+        if self.operating_mode is DashboardOperatingMode.MANUAL:
+            self.service.select_scheduler_preset(preset_name)
+            self.coordinator = self.service.coordinator
+            self.history.clear()
+            self.history.append(self.service.get_latest_snapshot())
+        self._selected_scheduler_preset = preset_name
+        return preset_name
+
+    def get_scheduler_diagnostics(self) -> SchedulerDiagnostics:
+        """Return timing diagnostics for the currently displayed mode."""
+
+        if self.scenario_mode_active and self._scenario_progress is not None:
+            return self._scenario_progress.scheduler_diagnostics
+        return self.service.get_scheduler_diagnostics()
+
     def close(self) -> None:
         """Finalize active dashboard-owned execution and recording resources."""
 
@@ -600,9 +650,7 @@ class DashboardSimulation:
         if self._scenario_runner is None or self._scenario_progress is None:
             raise RuntimeError("scenario mode has no prepared scenario")
 
-        scenario_time_step_s = (
-            self.selected_scenario.time_step_s or self.time_step_s
-        )
+        scenario_time_step_s = self._scenario_runner.base_tick_s
         self._accumulated_time_s += min(
             elapsed_wall_time_s,
             self.maximum_catch_up_s,

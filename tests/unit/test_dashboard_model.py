@@ -227,7 +227,10 @@ def test_dashboard_simulation_advances_fixed_steps_and_records_history() -> None
 
     snapshot = dashboard_simulation.advance(elapsed_wall_time_s=0.025)
 
-    assert snapshot.simulation_time_s == pytest.approx(0.02)
+    assert dashboard_simulation.service.current_simulation_time_s == (
+        pytest.approx(0.02)
+    )
+    assert snapshot.simulation_time_s == pytest.approx(0.016)
     assert len(dashboard_simulation.history.times_s) == 2
     assert snapshot.starter_commanded
 
@@ -264,9 +267,12 @@ def test_dashboard_runs_selected_scenario_and_restores_manual_mode(
     assert dashboard_simulation.scenario_result.overall_status is (
         ScenarioOverallStatus.PASS
     )
-    assert final_snapshot.simulation_time_s == pytest.approx(0.02)
+    assert dashboard_simulation.scenario_progress.current_simulation_time_s == (
+        pytest.approx(0.02)
+    )
+    assert final_snapshot.simulation_time_s == pytest.approx(0.016)
     assert dashboard_simulation.history.times_s == pytest.approx(
-        [0.0, 0.01, 0.02]
+        [0.0, 0.001, 0.006, 0.011, 0.016]
     )
 
     manual_snapshot = dashboard_simulation.return_to_manual_mode()
@@ -285,5 +291,36 @@ def test_dashboard_scenario_mode_rejects_conflicting_selection(
 
     with pytest.raises(RuntimeError, match="finish"):
         dashboard_simulation.select_adjacent_scenario(1)
+
+    dashboard_simulation.cancel_scenario()
+
+
+def test_dashboard_selects_scheduler_preset_before_manual_or_scenario_run(
+    tmp_path: Path,
+) -> None:
+    scenario = _short_dashboard_scenario(str(tmp_path))
+    dashboard_simulation = DashboardSimulation(scenarios=(scenario,))
+
+    selected = dashboard_simulation.select_scheduler_preset(
+        "slow-controller"
+    )
+    dashboard_simulation.enter_runner_mode()
+    progress = dashboard_simulation.start_selected_scenario()
+
+    assert selected == "slow-controller"
+    assert progress.scheduler_diagnostics.preset_name == "slow-controller"
+    dashboard_simulation.cancel_scenario()
+
+
+def test_dashboard_rejects_scheduler_change_during_scenario(
+    tmp_path: Path,
+) -> None:
+    scenario = _short_dashboard_scenario(str(tmp_path))
+    dashboard_simulation = DashboardSimulation(scenarios=(scenario,))
+    dashboard_simulation.enter_runner_mode()
+    dashboard_simulation.start_selected_scenario()
+
+    with pytest.raises(RuntimeError, match="during a scenario"):
+        dashboard_simulation.select_scheduler_preset("slow-sensors")
 
     dashboard_simulation.cancel_scenario()

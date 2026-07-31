@@ -61,6 +61,7 @@ class LiveEngineDashboard:
         self._create_controls()
         self._create_sensor_fault_controls()
         self._create_scenario_controls()
+        self._create_timing_panel()
         self._create_signal_plots()
         self._manual_control_widgets = (
             self._throttle_slider,
@@ -273,13 +274,19 @@ class LiveEngineDashboard:
         self._scenario_dropdown_labels = scenario_labels
 
         self._scenario_progress_text = self._figure.text(
-            0.735,
+            0.733,
             0.937,
             "MANUAL CONTROL",
-            fontsize=6.8,
+            fontsize=6.5,
             family="monospace",
             color=self._MUTED_TEXT_COLOR,
             verticalalignment="center",
+        )
+        self._timing_panel_button = self._create_button(
+            bounds=(0.778, 0.928, 0.055, 0.026),
+            label="TIMING",
+            color="#263950",
+            callback=self._on_timing_panel,
         )
         self._run_scenario_button = self._create_button(
             bounds=(0.840, 0.928, 0.050, 0.026),
@@ -294,6 +301,106 @@ class LiveEngineDashboard:
             callback=self._on_cancel_scenario,
         )
         self._update_scenario_status()
+
+    def _create_timing_panel(self) -> None:
+        """Create a modal scheduler diagnostics and preset-selection panel."""
+
+        panel_axis = self._figure.add_axes((0.425, 0.12, 0.55, 0.75))
+        panel_axis.set_facecolor(self._PANEL_COLOR)
+        panel_axis.set_zorder(30)
+        panel_axis.set_xticks(())
+        panel_axis.set_yticks(())
+        for spine in panel_axis.spines.values():
+            spine.set_color(self._BORDER_COLOR)
+            spine.set_linewidth(1.2)
+        panel_axis.text(
+            0.035,
+            0.955,
+            "SCHEDULER / TIMING",
+            transform=panel_axis.transAxes,
+            fontsize=11,
+            fontweight="bold",
+            color=self._TEXT_COLOR,
+            verticalalignment="top",
+        )
+        self._timing_summary_text = panel_axis.text(
+            0.035,
+            0.895,
+            "",
+            transform=panel_axis.transAxes,
+            fontsize=7.5,
+            family="monospace",
+            color=self._MUTED_TEXT_COLOR,
+            verticalalignment="top",
+        )
+        panel_axis.text(
+            0.035,
+            0.805,
+            "PRESET",
+            transform=panel_axis.transAxes,
+            fontsize=7.5,
+            fontweight="bold",
+            color=self._MUTED_TEXT_COLOR,
+        )
+        self._timing_table_text = panel_axis.text(
+            0.305,
+            0.815,
+            "",
+            transform=panel_axis.transAxes,
+            fontsize=6.7,
+            family="monospace",
+            color=self._TEXT_COLOR,
+            verticalalignment="top",
+            linespacing=1.35,
+        )
+        self._timing_instruction_text = panel_axis.text(
+            0.035,
+            0.045,
+            "Preset changes are accepted only while the simulation is stopped.",
+            transform=panel_axis.transAxes,
+            fontsize=7,
+            color=self._MUTED_TEXT_COLOR,
+        )
+
+        preset_labels = (
+            self.dashboard_simulation.available_scheduler_presets()
+        )
+        selected_preset_index = preset_labels.index(
+            self.dashboard_simulation.selected_scheduler_preset
+        )
+        preset_axis = self._figure.add_axes((0.445, 0.39, 0.135, 0.30))
+        self._style_widget_axis(preset_axis)
+        preset_axis.set_zorder(31)
+        self._timing_preset_selector = RadioButtons(
+            preset_axis,
+            preset_labels,
+            active=selected_preset_index,
+            activecolor=self._ACCENT_COLOR,
+            radio_props={
+                "edgecolor": self._MUTED_TEXT_COLOR,
+                "linewidth": 0.8,
+                "s": 30.0,
+            },
+        )
+        for label in self._timing_preset_selector.labels:
+            label.set_fontsize(7.2)
+            label.set_color(self._TEXT_COLOR)
+        self._timing_preset_selector.on_clicked(
+            self._on_timing_preset_selected
+        )
+
+        close_button = self._create_button(
+            bounds=(0.907, 0.823, 0.050, 0.028),
+            label="CLOSE",
+            color="#263950",
+            callback=self._on_timing_panel,
+        )
+        close_button.ax.set_zorder(31)
+        self._timing_panel_axis = panel_axis
+        self._timing_preset_axis = preset_axis
+        self._timing_close_button = close_button
+        self._timing_panel_visible = False
+        self._set_timing_panel_visible(False)
 
     def _create_controls(self) -> None:
         """Create throttle lever and operator command buttons."""
@@ -913,6 +1020,7 @@ class LiveEngineDashboard:
         self._update_status(snapshot)
         self._update_scenario_status()
         self._update_recording_status()
+        self._update_timing_panel()
         self._figure.canvas.draw_idle()
 
     def _update_status(self, snapshot: EngineSimulationSnapshot) -> None:
@@ -1258,6 +1366,111 @@ class LiveEngineDashboard:
         self._scenario_dropdown_axis.set_visible(not is_open)
         self._scenario_dropdown_selector.active = not is_open
         self._figure.canvas.draw_idle()
+
+    def _on_timing_panel(self, _event: object) -> None:
+        """Open or close the scheduler diagnostics overlay."""
+
+        self._hide_scenario_dropdown()
+        self._set_timing_panel_visible(not self._timing_panel_visible)
+        self._update_timing_panel()
+        self._figure.canvas.draw_idle()
+
+    def _on_timing_preset_selected(self, preset_name: str) -> None:
+        """Select an immutable scheduler preset while execution is stopped."""
+
+        if getattr(self, "_timing_selection_callback_active", False):
+            return
+        try:
+            selected_preset = (
+                self.dashboard_simulation.select_scheduler_preset(
+                    preset_name
+                )
+            )
+        except (KeyError, RuntimeError) as error:
+            self._set_scenario_feedback(str(error), self._WARNING_COLOR)
+            self._restore_timing_preset_selection()
+            return
+        self._set_scenario_feedback(
+            f"Scheduler preset selected  /  {selected_preset}",
+            self._ACCENT_COLOR,
+        )
+        self._update_timing_panel()
+        self._figure.canvas.draw_idle()
+
+    def _restore_timing_preset_selection(self) -> None:
+        """Restore the radio selection after a rejected timing change."""
+
+        labels = tuple(
+            label.get_text()
+            for label in self._timing_preset_selector.labels
+        )
+        selected_index = labels.index(
+            self.dashboard_simulation.selected_scheduler_preset
+        )
+        self._timing_selection_callback_active = True
+        self._timing_preset_selector.set_active(selected_index)
+        self._timing_selection_callback_active = False
+
+    def _set_timing_panel_visible(self, visible: bool) -> None:
+        """Show or hide every axis belonging to the timing overlay."""
+
+        self._timing_panel_visible = visible
+        self._timing_panel_axis.set_visible(visible)
+        self._timing_preset_axis.set_visible(visible)
+        self._timing_close_button.ax.set_visible(visible)
+        self._timing_panel_button.label.set_text(
+            "TIMING ▲" if visible else "TIMING"
+        )
+
+    def _update_timing_panel(self) -> None:
+        """Refresh timing diagnostics at the normal dashboard UI rate."""
+
+        diagnostics = self.dashboard_simulation.get_scheduler_diagnostics()
+        self._timing_summary_text.set_text(
+            f"Preset {diagnostics.preset_name}  |  "
+            f"base {diagnostics.base_tick_s * 1_000.0:g} ms  |  "
+            f"T+ {diagnostics.current_simulation_time_s:.3f} s  |  "
+            f"tick {diagnostics.current_tick}  |  "
+            f"missed {diagnostics.total_missed_release_count}"
+        )
+        table_lines = [
+            "TASK          PERIOD PHASE PRI  EXECUTIONS   LAST      NEXT MISS",
+        ]
+        for task in diagnostics.tasks:
+            last_execution = (
+                "--"
+                if task.last_execution_simulation_time_s is None
+                else f"{task.last_execution_simulation_time_s:.3f}"
+            )
+            table_lines.append(
+                f"{task.task_name[:13]:13s} "
+                f"{task.effective_period_s * 1_000.0:5g} "
+                f"{task.phase_offset_ticks * diagnostics.base_tick_s * 1_000.0:5g} "
+                f"{task.priority:3d} "
+                f"{task.execution_count:11d} "
+                f"{last_execution:>7s} "
+                f"{task.next_release_simulation_time_s:9.3f} "
+                f"{task.missed_release_count:4d}"
+            )
+        self._timing_table_text.set_text("\n".join(table_lines))
+
+        snapshot = self.dashboard_simulation.get_latest_snapshot()
+        preset_change_allowed = (
+            not self.dashboard_simulation.scenario_is_running
+            and (
+                self.dashboard_simulation.scenario_mode_active
+                or snapshot.operating_state is EngineOperatingState.OFF
+            )
+        )
+        self._timing_preset_selector.active = preset_change_allowed
+        self._timing_preset_axis.set_alpha(
+            1.0 if preset_change_allowed else 0.35
+        )
+        self._timing_instruction_text.set_color(
+            self._MUTED_TEXT_COLOR
+            if preset_change_allowed
+            else self._WARNING_COLOR
+        )
 
     def _on_scenario_selected(self, scenario_label: str) -> None:
         """Select one scenario from the runner-mode dropdown."""
