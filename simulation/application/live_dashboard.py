@@ -257,6 +257,7 @@ class LiveEngineDashboard:
             scenario_labels,
             active=0,
             activecolor=self._ACCENT_COLOR,
+            useblit=False,
             radio_props={
                 "edgecolor": self._MUTED_TEXT_COLOR,
                 "linewidth": 0.8,
@@ -1649,8 +1650,14 @@ class LiveEngineDashboard:
     def _hide_scenario_dropdown(self) -> None:
         """Close and deactivate the scenario dropdown overlay."""
 
+        was_visible = self._scenario_dropdown_axis.get_visible()
         self._scenario_dropdown_axis.set_visible(False)
         self._scenario_dropdown_selector.active = False
+        if was_visible:
+            # RadioButtons can otherwise leave its last blitted circle
+            # collection on interactive backends after the callback hides
+            # the containing axis.
+            self._figure.canvas.draw()
 
     @staticmethod
     def _set_widget_active(widget: AxesWidget, active: bool) -> None:

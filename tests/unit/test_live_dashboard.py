@@ -393,6 +393,11 @@ def test_dashboard_runs_scenario_live_and_restores_manual_controls(
     )
     dashboard._scenario_dropdown_selector.set_active(0)
     assert dashboard._scenario_dropdown_axis.get_visible() is False
+    assert dashboard._scenario_dropdown_selector._useblit is False
+    assert (
+        dashboard._scenario_dropdown_selector._buttons.get_animated()
+        is False
+    )
 
     dashboard._on_run_scenario(None)
 
