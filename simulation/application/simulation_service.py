@@ -1,8 +1,17 @@
 """Application-facing control boundary for simulation clients."""
 
+from dataclasses import replace
 from pathlib import Path
 
+from simulation.application.composition import create_configured_coordinator
 from simulation.application.engine_simulation import EngineSimulationCoordinator
+from simulation.configuration.engine_definition import EngineDefinition
+from simulation.configuration.fadec_calibration import FadecCalibration
+from simulation.configuration.profiles import (
+    reference_engine_definition,
+    reference_fadec_calibration,
+)
+from simulation.core.types import AmbientConditions
 from simulation.operation.state_machine import EngineOperationRequest
 from simulation.operation.engine_state import EngineOperatingState
 from simulation.plants.config import PlantSelectionConfig
@@ -53,21 +62,49 @@ class SimulationService:
         plant_config: PlantSelectionConfig | None = None,
         scheduling_mode: SchedulingMode = SchedulingMode.UNPACED,
         *,
+        engine_definition: EngineDefinition | None = None,
+        fadec_calibration: FadecCalibration | None = None,
+        sensor_random_seed: int | None = 0,
+        ambient_conditions: AmbientConditions | None = None,
         time_step_s: float = 0.01,
     ) -> None:
         if coordinator is not None and (
-            scheduler_config is not None or plant_config is not None
+            scheduler_config is not None
+            or plant_config is not None
+            or engine_definition is not None
+            or fadec_calibration is not None
+            or ambient_conditions is not None
         ):
             raise ValueError(
-                "provide scheduler_config and plant_config only when constructing "
+                "runtime configuration can be provided only when constructing "
                 "the coordinator"
+            )
+        if engine_definition is not None and plant_config is not None:
+            raise ValueError(
+                "provide either engine_definition or plant_config, not both"
             )
         if time_step_s <= 0.0:
             raise ValueError("time_step_s must be greater than zero")
-        self.coordinator = coordinator or EngineSimulationCoordinator(
-            scheduler_config=scheduler_config,
-            plant_config=plant_config,
-        )
+
+        self.engine_definition: EngineDefinition | None = None
+        self.fadec_calibration: FadecCalibration | None = None
+        self.sensor_random_seed = sensor_random_seed
+        if coordinator is None:
+            self.engine_definition = (
+                engine_definition
+                or reference_engine_definition(plant=plant_config)
+            )
+            self.fadec_calibration = (
+                fadec_calibration or reference_fadec_calibration()
+            )
+            coordinator = create_configured_coordinator(
+                self.engine_definition,
+                self.fadec_calibration,
+                scheduler_config=scheduler_config,
+                sensor_random_seed=sensor_random_seed,
+                ambient_conditions=ambient_conditions,
+            )
+        self.coordinator = coordinator
         seconds_to_ticks(
             time_step_s,
             self.coordinator.scheduler_config.base_tick_s,
@@ -242,11 +279,30 @@ class SimulationService:
         scheduler_config = self.coordinator.scheduler_config
         ambient_conditions = self.coordinator.ambient_conditions
         self.coordinator.stop_scheduler()
-        replacement = EngineSimulationCoordinator(
-            plant_config=selected_config,
-            scheduler_config=scheduler_config,
-            ambient_conditions=ambient_conditions,
-        )
+        updated_definition = None
+        if (
+            self.engine_definition is not None
+            and self.fadec_calibration is not None
+        ):
+            updated_definition = replace(
+                self.engine_definition,
+                plant=selected_config,
+            )
+            replacement = create_configured_coordinator(
+                updated_definition,
+                self.fadec_calibration,
+                scheduler_config=scheduler_config,
+                sensor_random_seed=self.sensor_random_seed,
+                ambient_conditions=ambient_conditions,
+            )
+        else:
+            replacement = EngineSimulationCoordinator(
+                plant_config=selected_config,
+                scheduler_config=scheduler_config,
+                ambient_conditions=ambient_conditions,
+            )
+        if updated_definition is not None:
+            self.engine_definition = updated_definition
         self._attach_coordinator(replacement)
         self.coordinator.event_log.emit(
             0.0,
@@ -296,11 +352,23 @@ class SimulationService:
             raise RuntimeError(message)
         previous_preset = self.coordinator.scheduler_config.preset_name
         self.coordinator.stop_scheduler()
-        replacement = EngineSimulationCoordinator(
-            scheduler_config=selected_config,
-            plant_config=self.coordinator.plant_config,
-            ambient_conditions=self.coordinator.ambient_conditions,
-        )
+        if (
+            self.engine_definition is not None
+            and self.fadec_calibration is not None
+        ):
+            replacement = create_configured_coordinator(
+                self.engine_definition,
+                self.fadec_calibration,
+                scheduler_config=selected_config,
+                sensor_random_seed=self.sensor_random_seed,
+                ambient_conditions=self.coordinator.ambient_conditions,
+            )
+        else:
+            replacement = EngineSimulationCoordinator(
+                scheduler_config=selected_config,
+                plant_config=self.coordinator.plant_config,
+                ambient_conditions=self.coordinator.ambient_conditions,
+            )
         self._attach_coordinator(replacement)
         self.coordinator.event_log.emit(
             0.0,
@@ -528,6 +596,30 @@ class SimulationService:
             self.coordinator.protection_manager.overspeed_limiter.parameters
         )
         configuration_summary = (
+            (
+                "engine_definition_id",
+                None
+                if self.engine_definition is None
+                else self.engine_definition.engine_id,
+            ),
+            (
+                "engine_definition_version",
+                None
+                if self.engine_definition is None
+                else self.engine_definition.definition_version,
+            ),
+            (
+                "fadec_calibration_id",
+                None
+                if self.fadec_calibration is None
+                else self.fadec_calibration.calibration_id,
+            ),
+            (
+                "fadec_calibration_version",
+                None
+                if self.fadec_calibration is None
+                else self.fadec_calibration.calibration_version,
+            ),
             ("plant_model_id", self.coordinator.engine_model.model_id),
             (
                 "engine_idle_speed_rpm",
@@ -598,6 +690,16 @@ class SimulationService:
             ),
             simulation_scheduling_mode=self.scheduling_mode.value,
             configuration_summary=configuration_summary,
+            engine_definition=(
+                {}
+                if self.engine_definition is None
+                else self.engine_definition.to_dict()
+            ),
+            fadec_calibration=(
+                {}
+                if self.fadec_calibration is None
+                else self.fadec_calibration.to_dict()
+            ),
             repository_root=Path(__file__).resolve().parents[2],
             plant_metadata=plant_metadata,
         )

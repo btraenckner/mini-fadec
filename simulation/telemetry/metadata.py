@@ -12,7 +12,7 @@ from simulation.telemetry.events import EVENT_SCHEMA_VERSION
 from simulation.telemetry.snapshot import TELEMETRY_SCHEMA_VERSION
 
 
-METADATA_SCHEMA_VERSION = "1.2"
+METADATA_SCHEMA_VERSION = "1.3"
 
 ConfigurationValue: TypeAlias = str | int | float | bool | None
 
@@ -45,6 +45,8 @@ class RunMetadataContext:
     simulation_scheduling_mode: str = "UNPACED"
     configuration_identifier: str = "default"
     configuration_summary: tuple[tuple[str, ConfigurationValue], ...] = ()
+    engine_definition: dict[str, object] = field(default_factory=dict)
+    fadec_calibration: dict[str, object] = field(default_factory=dict)
     repository_root: Path | None = None
     plant_metadata: dict[str, object] = field(default_factory=dict)
 
@@ -144,6 +146,8 @@ def build_run_metadata(
         "simulation_scheduling_mode": context.simulation_scheduling_mode,
         "configuration_identifier": context.configuration_identifier,
         "configuration_summary": dict(context.configuration_summary),
+        "engine_definition": dict(context.engine_definition),
+        "fadec_calibration": dict(context.fadec_calibration),
         "git_commit": git_metadata.commit,
         "git_branch": git_metadata.branch,
         "git_dirty": git_metadata.dirty,
