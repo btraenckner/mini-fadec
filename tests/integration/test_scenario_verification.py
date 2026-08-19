@@ -14,6 +14,7 @@ from simulation.scenarios.runner import ScenarioRunner
 from simulation.scenarios.serialization import normalize_deterministic_result
 from simulation.telemetry.events import EventType
 from simulation.verification.results import ScenarioOverallStatus
+from simulation.verification.test_cases import fadec_test_case_catalog
 
 
 def _isolated_scenario(scenario: Scenario, base_directory: Path) -> Scenario:
@@ -162,6 +163,7 @@ def test_soft_and_hard_overspeed_use_validated_fault_path(
 def test_run_artifacts_match_in_memory_verification_results(
     scenario_results: dict,
 ) -> None:
+    test_case_catalog = fadec_test_case_catalog()
     for result in scenario_results.values():
         assert result.run_directory is not None
         assert {
@@ -175,16 +177,36 @@ def test_run_artifacts_match_in_memory_verification_results(
         requirements = json.loads(
             result.requirements_path.read_text(encoding="utf-8")
         )
+        metadata = json.loads(
+            result.metadata_path.read_text(encoding="utf-8")
+        )
         report = result.report_path.read_text(encoding="utf-8")
+        expected_test_case_ids = [
+            case.test_case_id
+            for case in test_case_catalog.for_scenario(result.scenario_id)
+        ]
+        expected_requirement_ids = list(
+            test_case_catalog.requirement_ids_for_scenario(result.scenario_id)
+        )
 
+        assert requirements["report_schema_version"] == "1.2"
         assert requirements["overall_result"] == result.overall_status.value
         assert requirements["scheduler"]["preset"] == result.scheduler_preset
         assert requirements["scheduler"]["tasks"]
         assert [
             item["status"] for item in requirements["requirement_results"]
         ] == [item.status.value for item in result.requirement_results]
+        assert requirements["traceability"] == {
+            "test_case_ids": expected_test_case_ids,
+            "baseline_requirement_ids": expected_requirement_ids,
+        }
+        assert expected_test_case_ids
+        assert expected_requirement_ids
+        assert metadata["formal_test_case_ids"] == expected_test_case_ids
+        assert metadata["baseline_requirement_ids"] == expected_requirement_ids
         assert f"Scenario result:** {result.overall_status.value}" in report
         assert f"Scheduler preset: {result.scheduler_preset}" in report
+        assert f"Formal test cases: {', '.join(expected_test_case_ids)}" in report
 
 
 def test_repeated_scenario_runs_have_equivalent_normalized_results_and_csv(

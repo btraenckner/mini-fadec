@@ -16,6 +16,11 @@ from simulation.verification.serialization import (
     update_json_object,
     write_json_exclusive,
 )
+from simulation.verification.test_cases import (
+    TestCaseCatalog,
+    TestCaseSpecification,
+    fadec_test_case_catalog,
+)
 
 
 def write_verification_artifacts(
@@ -33,6 +38,18 @@ def write_verification_artifacts(
     requirements_path = run_directory / "requirements.json"
     report_path = run_directory / "report.md"
     requirements_baseline = fadec_control_requirements_baseline()
+    test_case_catalog = fadec_test_case_catalog()
+    linked_test_cases = _validated_test_case_trace(
+        scenario,
+        requirements_baseline,
+        test_case_catalog,
+    )
+    test_case_ids = tuple(
+        test_case.test_case_id for test_case in linked_test_cases
+    )
+    baseline_requirement_ids = (
+        test_case_catalog.requirement_ids_for_scenario(scenario.scenario_id)
+    )
 
     write_json_exclusive(scenario_path, scenario_to_dict(scenario))
     write_json_exclusive(
@@ -43,6 +60,15 @@ def write_verification_artifacts(
                 "baseline_id": requirements_baseline.baseline_id,
                 "version": requirements_baseline.version,
                 "status": requirements_baseline.status.value,
+            },
+            "test_case_catalog": {
+                "catalog_id": test_case_catalog.catalog_id,
+                "version": test_case_catalog.version,
+                "status": test_case_catalog.status.value,
+            },
+            "traceability": {
+                "test_case_ids": test_case_ids,
+                "baseline_requirement_ids": baseline_requirement_ids,
             },
             "scenario_id": result.scenario_id,
             "scenario_name": result.scenario_name,
@@ -87,6 +113,9 @@ def write_verification_artifacts(
         result=result,
         git_commit=git_commit,
         requirements_baseline=requirements_baseline,
+        test_case_catalog=test_case_catalog,
+        test_case_ids=test_case_ids,
+        baseline_requirement_ids=baseline_requirement_ids,
     )
     if result.metadata_path is not None and result.metadata_path.exists():
         update_json_object(
@@ -102,6 +131,11 @@ def write_verification_artifacts(
                 "requirements_baseline_status": (
                     requirements_baseline.status.value
                 ),
+                "test_case_catalog_id": test_case_catalog.catalog_id,
+                "test_case_catalog_version": test_case_catalog.version,
+                "test_case_catalog_status": test_case_catalog.status.value,
+                "formal_test_case_ids": test_case_ids,
+                "baseline_requirement_ids": baseline_requirement_ids,
                 "requirement_counts": {
                     "passed": result.passed_requirement_count,
                     "failed": result.failed_requirement_count,
@@ -131,6 +165,9 @@ def _write_markdown_report(
     result: ScenarioResult,
     git_commit: str | None,
     requirements_baseline: RequirementBaseline,
+    test_case_catalog: TestCaseCatalog,
+    test_case_ids: tuple[str, ...],
+    baseline_requirement_ids: tuple[str, ...],
 ) -> None:
     failed = tuple(
         requirement
@@ -167,6 +204,14 @@ def _write_markdown_report(
             f"v{requirements_baseline.version} "
             f"({requirements_baseline.status.value})"
         ),
+        (
+            "- Test-case catalog: "
+            f"{test_case_catalog.catalog_id} "
+            f"v{test_case_catalog.version} "
+            f"({test_case_catalog.status.value})"
+        ),
+        f"- Formal test cases: {_format_ids(test_case_ids)}",
+        f"- Baseline requirements: {_format_ids(baseline_requirement_ids)}",
         f"- Git commit: {git_commit or 'unavailable'}",
         f"- Run directory: {result.run_directory or 'unavailable'}",
         "",
@@ -281,3 +326,35 @@ def _format_limit(lower: float | None, upper: float | None) -> str:
 
 def _escape_table(value: str) -> str:
     return value.replace("|", "\\|").replace("\n", " ")
+
+
+def _format_ids(values: tuple[str, ...]) -> str:
+    return ", ".join(values) if values else "none linked"
+
+
+def _validated_test_case_trace(
+    scenario: Scenario,
+    requirements_baseline: RequirementBaseline,
+    test_case_catalog: TestCaseCatalog,
+) -> tuple[TestCaseSpecification, ...]:
+    linked_test_cases = test_case_catalog.for_scenario(scenario.scenario_id)
+    scenario_requirement_ids = {
+        requirement.requirement_id for requirement in scenario.requirements
+    }
+    for test_case in linked_test_cases:
+        for requirement_id in test_case.linked_requirement_ids:
+            requirement = requirements_baseline.requirement(requirement_id)
+            if scenario.scenario_id not in requirement.scenario_ids:
+                raise ValueError(
+                    f"test case {test_case.test_case_id} links scenario "
+                    f"{scenario.scenario_id} outside baseline requirement "
+                    f"{requirement_id}"
+                )
+            if scenario_requirement_ids.isdisjoint(
+                requirement.executable_requirement_ids
+            ):
+                raise ValueError(
+                    f"scenario {scenario.scenario_id} does not contain executable "
+                    f"evidence for baseline requirement {requirement_id}"
+                )
+    return linked_test_cases

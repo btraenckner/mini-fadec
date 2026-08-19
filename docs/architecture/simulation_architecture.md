@@ -521,6 +521,14 @@ human baseline and traceability matrix live in `docs/requirements/` and
 `docs/verification/`; a structural trace does not by itself claim that a
 requirement passed for every engine profile.
 
+`simulation.verification.test_cases` owns the versioned formal test catalog.
+Each immutable specification records applicability, controlled environment,
+preconditions, procedure, termination, evidence signals, acceptance criteria,
+and links to scenarios or existing unit automation. Verification reports add
+the catalog identity and all formal test and baseline requirement IDs traced
+through their scenario. Partial automation remains explicitly distinct from
+an executable scenario and from a passing result.
+
 ### Scenario definitions, actions, and sequencing
 
 A `Scenario` has a stable ID, name, description, maximum duration, optional
@@ -690,15 +698,16 @@ with the final snapshot so controlled failures and cancellations retain the
 same report artifact structure without duplicating CSV-writing logic.
 
 `scenario.json` uses explicit action, trigger, condition, and evaluator type
-names plus parameters. `requirements.json` contains schema version, aggregate
-status and counts, scheduler preset and full task configuration, action
-results, requirement evidence, and artifact paths.
+names plus parameters. `requirements.json` contains schema version, baseline
+and test-catalog identity, formal test and baseline requirement trace IDs,
+aggregate status and counts, scheduler preset and full task configuration,
+action results, requirement evidence, and artifact paths.
 JSON serialization rejects nonstandard NaN and Infinity values by converting
 unavailable numeric evidence to `null`. `report.md` summarizes execution,
 actions, requirements, failures, evidence, source revision, and artifact
 links without embedding telemetry tables. Existing report files are never
-overwritten. Scenario identity, status, and counts are added to finalized run
-metadata.
+overwritten. Scenario identity, status, baseline/catalog trace, and counts are
+added to finalized run metadata.
 
 To extend the framework, add a small immutable action whose `execute` method
 uses the narrow application-service protocol; add a condition that reads only

@@ -65,6 +65,8 @@ limitations are documented in
 The draft requirements baseline and its current verification trace are defined
 in [docs/requirements/fadec_control_requirements.md](docs/requirements/fadec_control_requirements.md)
 and [docs/verification/requirements_traceability_matrix.md](docs/verification/requirements_traceability_matrix.md).
+The corresponding formal procedures are indexed in
+[docs/verification/test_case_catalog.md](docs/verification/test_case_catalog.md).
 
 ## Safety Notice
 

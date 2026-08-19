@@ -7,6 +7,11 @@ This plan defines how the draft control requirements baseline
 cases, executed, and reported. It controls evidence generation; it does not
 claim that the simulation or its reports are certified verification tools.
 
+The controlled draft test-case catalog is `MINI-FADEC-TEST-CASES` version
+`0.1.0`. Its machine-readable source is
+`simulation/verification/test_cases.py`; the human-readable index is
+`docs/verification/test_case_catalog.md`.
+
 ## Verification levels
 
 Evidence is classified so that a simulation result cannot be mistaken for a
@@ -43,7 +48,7 @@ the affected tests are rerun or a documented impact analysis justifies reuse.
 
 ## Test-case specification requirements
 
-Each formal test case added in the next step must define:
+Each formal test case in the controlled catalog defines:
 
 - stable `TC-<DOMAIN>-<NNN>` ID;
 - linked `FADEC-*` requirement IDs;
@@ -56,6 +61,14 @@ Each formal test case added in the next step must define:
 - evaluated signals, event evidence, limits, tolerances, and dwell times;
 - explicit `PASS`, `FAIL`, `ERROR`, `NOT_EVALUATED`, and `NOT_APPLICABLE`
   behavior.
+
+Implementation status is independent of a verification result:
+
+- `EXECUTABLE_SCENARIO` means a deterministic scenario and post-run evidence
+  are linked.
+- `PARTIAL_AUTOMATION` means useful automated checks exist, but a complete
+  formal scenario or evidence package is still missing.
+- `PLANNED` means no executable evidence is claimed yet.
 
 ## Planned campaign groups
 
@@ -100,8 +113,8 @@ The final campaign package should contain:
 
 ## Baseline review gate
 
-Before test-case implementation begins, the draft baseline must be reviewed
-for:
+Before the draft test cases are approved or used for a compliance campaign,
+the baseline and catalog must be reviewed for:
 
 1. correct system boundary and intended compliance claim;
 2. completeness of normal, boundary, protection, and fault behavior;

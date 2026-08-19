@@ -317,11 +317,20 @@ def test_reports_metadata_and_json_are_complete_and_standards_compliant(
     requirements = json.loads(requirements_text)
     metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))  # type: ignore[union-attr]
 
-    assert requirements["report_schema_version"] == "1.1"
+    assert requirements["report_schema_version"] == "1.2"
     assert requirements["requirements_baseline"] == {
         "baseline_id": "MINI-FADEC-CONTROL-REQ",
         "version": "0.1.0",
         "status": "DRAFT",
+    }
+    assert requirements["test_case_catalog"] == {
+        "catalog_id": "MINI-FADEC-TEST-CASES",
+        "version": "0.1.0",
+        "status": "DRAFT",
+    }
+    assert requirements["traceability"] == {
+        "test_case_ids": [],
+        "baseline_requirement_ids": [],
     }
     assert requirements["action_results"]
     assert requirements["requirement_results"][0]["evidence"]["measured_value"] is None
@@ -331,18 +340,53 @@ def test_reports_metadata_and_json_are_complete_and_standards_compliant(
         "Requirements baseline: MINI-FADEC-CONTROL-REQ v0.1.0 (DRAFT)"
         in report_text
     )
+    assert (
+        "Test-case catalog: MINI-FADEC-TEST-CASES v0.1.0 (DRAFT)"
+        in report_text
+    )
+    assert "Formal test cases: none linked" in report_text
+    assert "Baseline requirements: none linked" in report_text
     assert "REQ-TEST-001" in report_text
     assert metadata["scenario_id"] == "SCN-TEST-001"
     assert metadata["overall_verification_result"] == "PASS"
     assert metadata["requirements_baseline_id"] == "MINI-FADEC-CONTROL-REQ"
     assert metadata["requirements_baseline_version"] == "0.1.0"
     assert metadata["requirements_baseline_status"] == "DRAFT"
+    assert metadata["test_case_catalog_id"] == "MINI-FADEC-TEST-CASES"
+    assert metadata["test_case_catalog_version"] == "0.1.0"
+    assert metadata["test_case_catalog_status"] == "DRAFT"
+    assert metadata["formal_test_case_ids"] == []
+    assert metadata["baseline_requirement_ids"] == []
 
     with pytest.raises(FileExistsError):
         write_verification_artifacts(
             _short_scenario(tmp_path / "unused"),
             result,
             result.run_directory,  # type: ignore[arg-type]
+        )
+
+
+def test_report_rejects_scenario_identity_without_traced_evaluators(
+    tmp_path: Path,
+) -> None:
+    result = ScenarioRunner().run_scenario(
+        _short_scenario(tmp_path / "source")
+    )
+    spoofed_scenario = replace(
+        _short_scenario(tmp_path / "spoof"),
+        scenario_id="SCN-NORMAL-001",
+    )
+    output_directory = tmp_path / "spoof-report"
+    output_directory.mkdir()
+
+    with pytest.raises(
+        ValueError,
+        match="does not contain executable evidence",
+    ):
+        write_verification_artifacts(
+            spoofed_scenario,
+            result,
+            output_directory,
         )
 
 
