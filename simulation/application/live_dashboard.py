@@ -1,5 +1,7 @@
 """Matplotlib-based live dashboard for the Mini-FADEC simulation."""
 
+import math
+from collections.abc import Sequence
 from pathlib import Path
 import time
 
@@ -1013,14 +1015,14 @@ class LiveEngineDashboard:
             label="Validated",
         )
         snapshot = self.dashboard_simulation.service.get_latest_snapshot()
-        egt_axis.axhline(
+        self._egt_intervention_line = egt_axis.axhline(
             snapshot.egt_intervention_temperature_c,
             color=self._WARNING_COLOR,
             linestyle="--",
             linewidth=1.2,
             label="Intervention",
         )
-        egt_axis.axhline(
+        self._egt_maximum_line = egt_axis.axhline(
             snapshot.egt_maximum_temperature_c,
             color=self._DANGER_COLOR,
             linestyle="--",
@@ -1186,6 +1188,11 @@ class LiveEngineDashboard:
         )
         for axis in self._plot_axes:
             axis.set_xlim(window_start_s, window_end_s)
+        self._update_y_axis_limits(
+            snapshot,
+            window_start_s=window_start_s,
+            window_end_s=window_end_s,
+        )
 
         self._update_status(snapshot)
         self._update_scenario_status()
@@ -1193,6 +1200,171 @@ class LiveEngineDashboard:
         self._update_timing_panel()
         self._update_plant_panel(snapshot)
         self._figure.canvas.draw_idle()
+
+    def _update_y_axis_limits(
+        self,
+        snapshot: EngineSimulationSnapshot,
+        *,
+        window_start_s: float,
+        window_end_s: float,
+    ) -> None:
+        """Fit physical signal axes to the active profile and visible data."""
+
+        history = self.dashboard_simulation.history
+        speed_values = list(
+            self._visible_finite_values(
+                history.times_s,
+                (
+                    history.speed_setpoints_rpm,
+                    history.rotor_speeds_rpm,
+                    history.measured_rotor_speeds_rpm,
+                    history.validated_rotor_speeds_rpm,
+                ),
+                window_start_s=window_start_s,
+                window_end_s=window_end_s,
+            )
+        )
+        engine_definition = self.dashboard_simulation.service.engine_definition
+        if engine_definition is not None:
+            speed_values.append(
+                engine_definition.operating_envelope.maximum_transient_speed_rpm
+            )
+
+        egt_values = list(
+            self._visible_finite_values(
+                history.times_s,
+                (
+                    history.exhaust_temperatures_c,
+                    history.measured_exhaust_temperatures_c,
+                    history.validated_exhaust_temperatures_c,
+                ),
+                window_start_s=window_start_s,
+                window_end_s=window_end_s,
+            )
+        )
+        egt_values.extend(
+            (
+                snapshot.egt_intervention_temperature_c,
+                snapshot.egt_maximum_temperature_c,
+            )
+        )
+        self._egt_intervention_line.set_ydata(
+            (snapshot.egt_intervention_temperature_c,) * 2
+        )
+        self._egt_maximum_line.set_ydata(
+            (snapshot.egt_maximum_temperature_c,) * 2
+        )
+
+        thrust_values = list(
+            self._visible_finite_values(
+                history.times_s,
+                (history.estimated_thrusts_n,),
+                window_start_s=window_start_s,
+                window_end_s=window_end_s,
+            )
+        )
+        plant_metadata = self.dashboard_simulation.get_plant_metadata()
+        configuration = plant_metadata.get("configuration", {})
+        if isinstance(configuration, dict):
+            configured_maximum_thrust = configuration.get(
+                "maximum_thrust_n"
+            )
+            if isinstance(configured_maximum_thrust, (int, float)):
+                thrust_values.append(float(configured_maximum_thrust))
+
+        speed_axis, egt_axis, _fuel_axis, thrust_axis = self._plot_axes
+        speed_axis.set_ylim(
+            self._adaptive_physical_axis_limits(
+                speed_values,
+                minimum_upper_limit=10_000.0,
+            )
+        )
+        egt_axis.set_ylim(
+            self._adaptive_physical_axis_limits(
+                egt_values,
+                minimum_upper_limit=100.0,
+            )
+        )
+        thrust_axis.set_ylim(
+            self._adaptive_physical_axis_limits(
+                thrust_values,
+                minimum_upper_limit=10.0,
+            )
+        )
+
+    @staticmethod
+    def _visible_finite_values(
+        times_s: Sequence[float],
+        signal_histories: Sequence[Sequence[float | None]],
+        *,
+        window_start_s: float,
+        window_end_s: float,
+    ) -> tuple[float, ...]:
+        """Return finite signal values inside the currently visible window."""
+
+        values: list[float] = []
+        for signal_history in signal_histories:
+            for simulation_time_s, value in zip(times_s, signal_history):
+                if (
+                    value is not None
+                    and window_start_s <= simulation_time_s <= window_end_s
+                    and math.isfinite(value)
+                ):
+                    values.append(value)
+        return tuple(values)
+
+    @classmethod
+    def _adaptive_physical_axis_limits(
+        cls,
+        values: Sequence[float],
+        *,
+        minimum_upper_limit: float,
+    ) -> tuple[float, float]:
+        """Return padded, readable limits that include zero and all values."""
+
+        finite_values = tuple(value for value in values if math.isfinite(value))
+        if not finite_values:
+            return 0.0, minimum_upper_limit
+        minimum_value = min(0.0, min(finite_values))
+        maximum_value = max(0.0, max(finite_values))
+        span = max(
+            maximum_value - minimum_value,
+            minimum_upper_limit,
+        )
+        lower_limit = (
+            minimum_value - 0.08 * span if minimum_value < 0.0 else 0.0
+        )
+        upper_target = max(
+            minimum_upper_limit,
+            maximum_value + 0.08 * span,
+        )
+        return lower_limit, cls._rounded_axis_upper_limit(upper_target)
+
+    @staticmethod
+    def _rounded_axis_upper_limit(value: float) -> float:
+        """Round an upper limit outward to a compact engineering value."""
+
+        magnitude = 10.0 ** math.floor(math.log10(value))
+        normalized_value = value / magnitude
+        for step in (
+            1.0,
+            1.25,
+            1.5,
+            1.75,
+            2.0,
+            2.5,
+            3.0,
+            4.0,
+            5.0,
+            6.0,
+            7.5,
+            8.0,
+            8.5,
+            10.0,
+        ):
+            if normalized_value <= step:
+                return step * magnitude
+        return 10.0 * magnitude
 
     def _update_status(self, snapshot: EngineSimulationSnapshot) -> None:
         """Update operating-state, telemetry, and transition indicators."""
@@ -1597,10 +1769,9 @@ class LiveEngineDashboard:
         if not self._plant_panel_visible and self._timing_panel_visible:
             self._set_timing_panel_visible(False)
         self._set_plant_panel_visible(not self._plant_panel_visible)
-        self._update_plant_panel(
+        self._refresh_dashboard(
             self.dashboard_simulation.get_latest_snapshot()
         )
-        self._figure.canvas.draw_idle()
 
     def _set_plant_panel_visible(self, visible: bool) -> None:
         """Show or hide all axes belonging to the plant overlay."""
@@ -1641,10 +1812,9 @@ class LiveEngineDashboard:
                 "state reset."
             )
             self._plant_feedback_text.set_color(self._SUCCESS_COLOR)
-        self._update_plant_panel(
+        self._refresh_dashboard(
             self.dashboard_simulation.get_latest_snapshot()
         )
-        self._figure.canvas.draw_idle()
 
     def _on_plant_selected(self, model_label: str) -> None:
         """Apply a stopped-only model selection through the application service."""
@@ -1666,10 +1836,9 @@ class LiveEngineDashboard:
                 "Selected fresh plant instance; simulation state reset."
             )
             self._plant_feedback_text.set_color(self._SUCCESS_COLOR)
-        self._update_plant_panel(
+        self._refresh_dashboard(
             self.dashboard_simulation.get_latest_snapshot()
         )
-        self._figure.canvas.draw_idle()
 
     def _update_plant_panel(
         self,
