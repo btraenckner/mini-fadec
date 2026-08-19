@@ -7,6 +7,7 @@ from simulation.operation.engine_state import EngineOperatingState
 from simulation.operation.state_machine import (
     EngineOperationRequest,
     EngineStateMachine,
+    EngineStateMachineParameters,
 )
 
 
@@ -256,3 +257,34 @@ def test_fault_reset_succeeds_when_rotor_is_stopped() -> None:
     )
 
     assert state_machine.state is EngineOperatingState.OFF
+
+
+def test_hung_start_transitions_to_fault_at_configured_timeout() -> None:
+    state_machine = EngineStateMachine(
+        EngineStateMachineParameters(maximum_start_duration_s=0.03)
+    )
+
+    update(
+        state_machine,
+        request=EngineOperationRequest(startup_requested=True),
+    )
+    update(state_machine, sensors=sensor_data(rotor_speed_rpm=10_000.0))
+    update(state_machine, sensors=sensor_data(rotor_speed_rpm=10_000.0))
+
+    assert state_machine.state is EngineOperatingState.FAULT
+    assert state_machine.start_timeout_triggered
+
+
+def test_successful_start_clears_start_supervision() -> None:
+    state_machine = EngineStateMachine()
+
+    advance_to_idle(state_machine)
+
+    assert state_machine.state is EngineOperatingState.IDLE
+    assert state_machine.start_elapsed_s == pytest.approx(0.0)
+    assert not state_machine.start_timeout_triggered
+
+
+def test_state_machine_rejects_nonpositive_start_timeout() -> None:
+    with pytest.raises(ValueError, match="maximum start duration"):
+        EngineStateMachineParameters(maximum_start_duration_s=0.0)

@@ -16,8 +16,13 @@ class EngineStateMachineParameters:
     stopped_speed_threshold_rpm: float = 500.0
     light_off_temperature_c: float = 500.0
     start_fuel_command: float = 0.25
+    maximum_start_duration_s: float = 10.0
     idle_throttle_command: float = 0.0
     running_throttle_threshold: float = 0.02
+
+    def __post_init__(self) -> None:
+        if self.maximum_start_duration_s <= 0.0:
+            raise ValueError("maximum start duration must be greater than zero")
 
 
 @dataclass(frozen=True)
@@ -54,12 +59,26 @@ class EngineStateMachine:
     ) -> None:
         self.parameters = parameters or EngineStateMachineParameters()
         self._state = EngineOperatingState.OFF
+        self._start_elapsed_s = 0.0
+        self._start_timeout_triggered = False
 
     @property
     def state(self) -> EngineOperatingState:
         """Return the current engine operating state."""
 
         return self._state
+
+    @property
+    def start_elapsed_s(self) -> float:
+        """Return elapsed CRANKING and IGNITION supervision time."""
+
+        return self._start_elapsed_s
+
+    @property
+    def start_timeout_triggered(self) -> bool:
+        """Return whether the current FAULT resulted from a hung start."""
+
+        return self._start_timeout_triggered
 
     def update(
         self,
@@ -72,8 +91,36 @@ class EngineStateMachine:
         if time_step_s <= 0.0:
             raise ValueError("time_step_s must be greater than zero")
 
+        previous_state = self._state
         self._evaluate_transitions(request=request, sensor_data=sensor_data)
+        self._update_start_supervision(previous_state, time_step_s)
         return self._command_for_state(request.throttle_command)
+
+    def _update_start_supervision(
+        self,
+        previous_state: EngineOperatingState,
+        time_step_s: float,
+    ) -> None:
+        start_states = {
+            EngineOperatingState.CRANKING,
+            EngineOperatingState.IGNITION,
+        }
+        if self._state in start_states:
+            if previous_state not in start_states:
+                self._start_elapsed_s = 0.0
+                self._start_timeout_triggered = False
+            self._start_elapsed_s += time_step_s
+            if (
+                self._start_elapsed_s
+                >= self.parameters.maximum_start_duration_s
+            ):
+                self._state = EngineOperatingState.FAULT
+                self._start_timeout_triggered = True
+            return
+
+        self._start_elapsed_s = 0.0
+        if self._state is not EngineOperatingState.FAULT:
+            self._start_timeout_triggered = False
 
     def _evaluate_transitions(
         self,

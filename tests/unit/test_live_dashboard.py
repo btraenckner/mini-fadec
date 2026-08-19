@@ -17,6 +17,7 @@ from simulation.application.simulation_service import SimulationService  # noqa:
 from simulation.operation.engine_state import EngineOperatingState  # noqa: E402
 from simulation.scenarios.actions import AddMarkerAction  # noqa: E402
 from simulation.scenarios.definitions import Scenario  # noqa: E402
+from simulation.scenarios.library import list_all_scenarios  # noqa: E402
 from simulation.scenarios.triggers import AtTimeTrigger  # noqa: E402
 from simulation.sensors.fault_injection import (  # noqa: E402
     BiasSensorFault,
@@ -113,7 +114,7 @@ def test_dashboard_uses_grouped_dark_theme_and_live_status_indicators() -> None:
     )
     assert "150k" in speed_tick_labels
     assert "150000" not in speed_tick_labels
-    assert len(dashboard._scenario_dropdown_labels) == 16
+    assert len(dashboard._scenario_dropdown_labels) == len(list_all_scenarios())
     assert dashboard._scenario_dropdown_labels[0].startswith("SCN-NORMAL-001")
     assert dashboard._scenario_dropdown_button.active is False
 
@@ -133,6 +134,44 @@ def test_dashboard_uses_grouped_dark_theme_and_live_status_indicators() -> None:
     assert dashboard._sensor_health_text.get_bbox_patch().get_facecolor() == (
         to_rgba(dashboard._DANGER_COLOR)
     )
+    dashboard.close(save_result=False)
+
+
+def test_scenario_dropdown_shows_every_full_label_with_readable_spacing() -> None:
+    dashboard = LiveEngineDashboard()
+    expected_labels = tuple(
+        f"{scenario.scenario_id} | {scenario.name.replace('_', ' ')}"
+        for scenario in list_all_scenarios()
+    )
+
+    dashboard._on_mode_switch(None)
+    dashboard._on_scenario_dropdown(None)
+    dashboard.figure.canvas.draw()
+
+    assert dashboard._scenario_dropdown_axis.get_visible()
+    assert dashboard._scenario_dropdown_header_axis.get_visible()
+    assert dashboard._scenario_dropdown_header_axis.texts[0].get_text() == (
+        f"SELECT TESTCASE SCENARIO  /  {len(expected_labels)} AVAILABLE"
+    )
+    assert dashboard._scenario_dropdown_labels == expected_labels
+    assert dashboard._scenario_dropdown_axis.get_position().width >= 0.50
+    assert (
+        dashboard._scenario_dropdown_axis.get_position().height
+        / len(expected_labels)
+        >= 0.025
+    )
+    label_bounds = sorted(
+        (
+            label.get_window_extent(dashboard.figure.canvas.get_renderer())
+            for label in dashboard._scenario_dropdown_selector.labels
+        ),
+        key=lambda bounds: bounds.y0,
+    )
+    assert all(
+        lower.y1 <= upper.y0
+        for lower, upper in zip(label_bounds, label_bounds[1:])
+    )
+
     dashboard.close(save_result=False)
 
 

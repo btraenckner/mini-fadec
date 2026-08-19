@@ -21,6 +21,15 @@ from simulation.scenarios.conditions import (
     EventTypeObservedCondition,
 )
 from simulation.scenarios.definitions import RecordingConfiguration, Scenario
+from simulation.scenarios.requirement_scenarios import (
+    ambient_challenge_scenario,
+    egt_limiter_arbitration_scenario,
+    fault_reset_interlock_scenario,
+    hot_start_protection_scenario,
+    hung_start_timeout_scenario,
+    sensor_fault_matrix_scenario,
+    throttle_schedule_scenario,
+)
 from simulation.scenarios.triggers import AtTimeTrigger, WhenConditionTrigger
 from simulation.sensors.fault_injection import (
     DriftSensorFault,
@@ -47,6 +56,7 @@ from simulation.verification.evaluators import (
     PathSimFuelLagRequirementEvaluator,
     PlantModelRequirementEvaluator,
     PlantTimeSynchronizationRequirementEvaluator,
+    ProtectionArbitrationRequirementEvaluator,
     ProtectionLimiterObservedRequirementEvaluator,
     SensorHealthReachedRequirementEvaluator,
     SchedulerPresetRequirementEvaluator,
@@ -56,6 +66,7 @@ from simulation.verification.evaluators import (
     StateSequenceRequirementEvaluator,
     TaskExecutionCountRequirementEvaluator,
     TaskExecutionRatioRequirementEvaluator,
+    TrueEgtWithinConfiguredLimitRequirementEvaluator,
 )
 from simulation.verification.requirements import (
     Requirement,
@@ -260,6 +271,13 @@ def normal_lifecycle_scenario() -> Scenario:
                 ActuatorInvariant.STARTER_INACTIVE_IN_RUNNING
             ),
         ),
+        _requirement(
+            "REQ-NORMAL-TRUE-EGT-LIMIT",
+            "True EGT shall remain below the configured transient limit.",
+            RequirementCategory.SIGNAL_LIMIT,
+            TrueEgtWithinConfiguredLimitRequirementEvaluator(),
+            RequirementCriticality.CRITICAL,
+        ),
         *_common_fuel_requirements("REQ-NORMAL"),
     )
     return Scenario(
@@ -362,6 +380,15 @@ def large_throttle_step_scenario() -> Scenario:
             ),
             RequirementCriticality.CRITICAL,
         ),
+        _requirement(
+            "REQ-TRANSIENT-TRUE-EGT-LIMIT",
+            "True EGT shall remain below the configured transient limit.",
+            RequirementCategory.SIGNAL_LIMIT,
+            TrueEgtWithinConfiguredLimitRequirementEvaluator(
+                reference_action_id="large_throttle_step"
+            ),
+            RequirementCriticality.CRITICAL,
+        ),
         *_common_fuel_requirements("REQ-TRANSIENT"),
     )
     return Scenario(
@@ -438,6 +465,15 @@ def rapid_throttle_reduction_scenario() -> Scenario:
                 EngineOperatingState.OFF,
                 "shutdown",
                 maximum_elapsed_s=8.0,
+            ),
+            RequirementCriticality.CRITICAL,
+        ),
+        _requirement(
+            "REQ-DECEL-TRUE-EGT-LIMIT",
+            "True EGT shall remain below the configured transient limit.",
+            RequirementCategory.SIGNAL_LIMIT,
+            TrueEgtWithinConfiguredLimitRequirementEvaluator(
+                reference_action_id="set_high_throttle"
             ),
             RequirementCriticality.CRITICAL,
         ),
@@ -769,6 +805,16 @@ def hard_overspeed_scenario() -> Scenario:
             RequirementCategory.ACTUATOR_SAFETY,
             ActuatorInvariantRequirementEvaluator(
                 ActuatorInvariant.FUEL_ZERO_IN_FAULT
+            ),
+            RequirementCriticality.CRITICAL,
+        ),
+        _requirement(
+            "REQ-HARD-ARBITRATION-CUTOFF",
+            "Hard cutoff shall override every nonzero fuel limit.",
+            RequirementCategory.LOGICAL_INVARIANT,
+            ProtectionArbitrationRequirementEvaluator(
+                reference_action_id="inject_speed_drift",
+                require_hard_cutoff=True,
             ),
             RequirementCriticality.CRITICAL,
         ),
@@ -1150,6 +1196,13 @@ REGRESSION_SCENARIOS = (
     nominal_multirate_lifecycle_scenario(),
     nominal_multirate_throttle_transient_scenario(),
     nominal_multirate_sensor_fault_scenario(),
+    fault_reset_interlock_scenario(),
+    hot_start_protection_scenario(),
+    hung_start_timeout_scenario(),
+    throttle_schedule_scenario(),
+    egt_limiter_arbitration_scenario(),
+    sensor_fault_matrix_scenario(SensorChannel.ROTOR_SPEED),
+    sensor_fault_matrix_scenario(SensorChannel.EXHAUST_TEMPERATURE),
 )
 
 EXPERIMENTAL_SCENARIOS = (
@@ -1163,6 +1216,30 @@ PATHSIM_SCENARIOS = (
     pathsim_fuel_step_scenario(),
 )
 
+ENVIRONMENT_SCENARIOS = (
+    ambient_challenge_scenario(
+        normal_lifecycle_scenario(),
+        scenario_id="SCN-ENV-001",
+        name="low_ambient_lifecycle",
+        temperature_c=-20.0,
+        pressure_pa=80_000.0,
+    ),
+    ambient_challenge_scenario(
+        normal_lifecycle_scenario(),
+        scenario_id="SCN-ENV-002",
+        name="nominal_ambient_lifecycle",
+        temperature_c=15.0,
+        pressure_pa=101_325.0,
+    ),
+    ambient_challenge_scenario(
+        normal_lifecycle_scenario(),
+        scenario_id="SCN-ENV-003",
+        name="high_ambient_lifecycle",
+        temperature_c=40.0,
+        pressure_pa=105_000.0,
+    ),
+)
+
 
 def list_scenarios() -> tuple[Scenario, ...]:
     """Return mandatory regression scenarios in deterministic order."""
@@ -1173,7 +1250,18 @@ def list_scenarios() -> tuple[Scenario, ...]:
 def list_all_scenarios() -> tuple[Scenario, ...]:
     """Return mandatory and explicitly experimental scenarios."""
 
-    return REGRESSION_SCENARIOS + EXPERIMENTAL_SCENARIOS + PATHSIM_SCENARIOS
+    return (
+        REGRESSION_SCENARIOS
+        + EXPERIMENTAL_SCENARIOS
+        + PATHSIM_SCENARIOS
+        + ENVIRONMENT_SCENARIOS
+    )
+
+
+def list_environment_scenarios() -> tuple[Scenario, ...]:
+    """Return controlled SIL ambient challenges with explicit fidelity limits."""
+
+    return ENVIRONMENT_SCENARIOS
 
 
 def list_pathsim_scenarios() -> tuple[Scenario, ...]:

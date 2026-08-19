@@ -36,6 +36,8 @@ class ScenarioControlInterface(Protocol):
 
     def clear_sensor_fault(self, channel: SensorChannel) -> None: ...
 
+    def set_fuel_delivery_fault(self, active: bool) -> None: ...
+
     def add_marker(self, text: str) -> SimulationEvent: ...
 
     def start_recording(self, run_name: str | None = None) -> Path: ...
@@ -100,8 +102,6 @@ class SetThrottleAction:
     def __post_init__(self) -> None:
         if not math.isfinite(self.throttle_demand):
             raise ValueError("throttle demand must be finite")
-        if not 0.0 <= self.throttle_demand <= 1.0:
-            raise ValueError("throttle demand must be between zero and one")
 
     def execute(self, service: ScenarioControlInterface) -> str:
         accepted = service.set_throttle(self.throttle_demand)
@@ -177,6 +177,26 @@ class ClearSensorFaultAction:
 
 
 @dataclass(frozen=True, kw_only=True)
+class SetFuelDeliveryFaultAction:
+    """Control a simulation-only complete loss of physical fuel delivery."""
+
+    action_id: str
+    description: str
+    trigger: ScenarioTrigger
+    active: bool
+    required_success: bool = True
+    timeout_s: float | None = None
+
+    def execute(self, service: ScenarioControlInterface) -> str:
+        service.set_fuel_delivery_fault(self.active)
+        return (
+            "fuel-delivery fault injected"
+            if self.active
+            else "fuel-delivery fault cleared"
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
 class AddMarkerAction:
     action_id: str
     description: str
@@ -231,6 +251,7 @@ ScenarioAction = (
     | RequestManualFaultAction
     | InjectSensorFaultAction
     | ClearSensorFaultAction
+    | SetFuelDeliveryFaultAction
     | AddMarkerAction
     | StartRecordingAction
     | StopRecordingAction

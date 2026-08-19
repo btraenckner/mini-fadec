@@ -1,6 +1,7 @@
 """Core data types used by the Mini-FADEC simulation."""
 
 from dataclasses import dataclass
+import math
 
 
 @dataclass(frozen=True)
@@ -9,6 +10,14 @@ class AmbientConditions:
 
     temperature_c: float = 15.0
     pressure_pa: float = 101_325.0
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.temperature_c):
+            raise ValueError("ambient temperature must be finite")
+        if not math.isfinite(self.pressure_pa) or self.pressure_pa <= 0.0:
+            raise ValueError(
+                "ambient pressure must be finite and greater than zero"
+            )
 
 
 @dataclass

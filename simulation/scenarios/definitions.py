@@ -30,6 +30,8 @@ SUPPORTED_CONFIGURATION_OVERRIDES = frozenset(
         "telemetry_sampling_period_s",
         "sensor_random_seed",
         "scheduler_preset",
+        "ambient_temperature_c",
+        "ambient_pressure_pa",
     }
 )
 

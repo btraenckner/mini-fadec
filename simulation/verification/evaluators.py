@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from simulation.operation.engine_state import EngineOperatingState
-from simulation.protection.types import ProtectionLimiter
+from simulation.protection.types import ProtectionDiagnosticReason, ProtectionLimiter
 from simulation.scheduling.presets import TASK_PRIORITIES
 from simulation.sensors.fault_injection import SensorChannel
 from simulation.telemetry.events import EventType
@@ -28,6 +28,8 @@ class NumericSignal(Enum):
     SPEED_SETPOINT_RPM = "speed_setpoint_rpm"
     SPEED_ERROR_RPM = "speed_error_rpm"
     THROTTLE_DEMAND = "throttle_demand"
+    TRUE_EGT_C = "exhaust_temperature_c"
+    START_ELAPSED_S = "start_elapsed_s"
 
 
 class ActuatorInvariant(Enum):
@@ -886,6 +888,697 @@ class NoTruthFallbackRequirementEvaluator:
                 relevant_action_id=self.reference_action_id,
             ),
             "No engine-truth fallback was observed",
+        )
+
+
+@dataclass(frozen=True)
+class ResetInterlockRequirementEvaluator:
+    """Verify turning reset rejection and stopped reset acceptance."""
+
+    turning_reset_action_id: str
+    stopped_reset_action_id: str
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        turning_time = _action_time(context, self.turning_reset_action_id)
+        stopped_time = _action_time(context, self.stopped_reset_action_id)
+        if turning_time is None or stopped_time is None:
+            return _not_evaluated("both reset actions must execute")
+        rejected = next(
+            (
+                event
+                for event in context.events
+                if event.event_type is EventType.RESET_REJECTED
+                and turning_time <= event.simulation_time_s < stopped_time
+            ),
+            None,
+        )
+        retained = tuple(
+            snapshot
+            for snapshot in context.snapshots
+            if turning_time <= snapshot.simulation_time_s < stopped_time
+        )
+        accepted = next(
+            (
+                event
+                for event in context.events
+                if event.event_type is EventType.RESET_ACCEPTED
+                and event.simulation_time_s >= stopped_time
+            ),
+            None,
+        )
+        off = next(
+            (
+                snapshot
+                for snapshot in context.snapshots
+                if snapshot.simulation_time_s >= stopped_time
+                and snapshot.operating_state is EngineOperatingState.OFF
+            ),
+            None,
+        )
+        passed = (
+            rejected is not None
+            and bool(retained)
+            and all(
+                snapshot.operating_state is EngineOperatingState.FAULT
+                for snapshot in retained
+            )
+            and accepted is not None
+            and off is not None
+        )
+        diagnostic = (
+            "turning reset rejected, FAULT retained, and stopped reset accepted"
+            if passed
+            else "reset interlock sequence did not match the required behavior"
+        )
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=diagnostic,
+                expected_value="REJECTED -> FAULT retained -> ACCEPTED -> OFF",
+                start_time_s=turning_time,
+                end_time_s=stopped_time,
+                evaluation_time_s=(
+                    None if off is None else off.simulation_time_s
+                ),
+                relevant_action_id=self.turning_reset_action_id,
+            ),
+            diagnostic,
+            None if passed else "RESET_INTERLOCK_SEQUENCE_MISMATCH",
+        )
+
+
+@dataclass(frozen=True)
+class HungStartTimeoutRequirementEvaluator:
+    """Verify a non-lighting start times out safely without another fault."""
+
+    start_action_id: str
+    maximum_start_duration_s: float
+    timing_tolerance_s: float = 0.05
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        start_time = _action_time(context, self.start_action_id)
+        if start_time is None:
+            return _not_evaluated("start action was not executed")
+        timeout_event = next(
+            (
+                event
+                for event in context.events
+                if event.event_type is EventType.START_TIMEOUT_ACTIVATED
+                and event.simulation_time_s >= start_time
+            ),
+            None,
+        )
+        fault = next(
+            (
+                snapshot
+                for snapshot in context.snapshots
+                if snapshot.simulation_time_s >= start_time
+                and snapshot.operating_state is EngineOperatingState.FAULT
+                and snapshot.start_timeout_triggered
+            ),
+            None,
+        )
+        if fault is None or timeout_event is None:
+            return EvaluationOutcome(
+                RequirementStatus.FAIL,
+                RequirementEvidence(
+                    expected_value="hung-start timeout and FAULT",
+                    upper_limit=self.maximum_start_duration_s,
+                    start_time_s=start_time,
+                ),
+                "Hung-start timeout response was not observed",
+                "HUNG_START_TIMEOUT_NOT_OBSERVED",
+            )
+        elapsed = fault.simulation_time_s - start_time
+        idle_seen = any(
+            snapshot.operating_state is EngineOperatingState.IDLE
+            for snapshot in context.snapshots
+            if start_time <= snapshot.simulation_time_s <= fault.simulation_time_s
+        )
+        passed = (
+            not idle_seen
+            and elapsed <= self.maximum_start_duration_s + self.timing_tolerance_s
+            and elapsed >= self.maximum_start_duration_s - self.timing_tolerance_s
+            and abs(fault.allowed_fuel_command) <= 1.0e-9
+        )
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=elapsed,
+                expected_value="FAULT with zero fuel and no IDLE",
+                upper_limit=self.maximum_start_duration_s,
+                tolerance=self.timing_tolerance_s,
+                margin=self.maximum_start_duration_s - elapsed,
+                evaluation_time_s=fault.simulation_time_s,
+                start_time_s=start_time,
+                elapsed_time_s=elapsed,
+                engine_state=fault.operating_state.value,
+                relevant_event_type=EventType.START_TIMEOUT_ACTIVATED.value,
+            ),
+            f"Hung start reached safe FAULT in {elapsed:.3f} s",
+            None if passed else "HUNG_START_RESPONSE_INVALID",
+        )
+
+
+@dataclass(frozen=True)
+class EgtLimitFuelCutoffRequirementEvaluator:
+    """Verify zero fuel when validated EGT reaches the calibrated maximum."""
+
+    reference_action_id: str
+    maximum_response_time_s: float = 0.02
+    tolerance_s: float = 1.0e-9
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        reference_time = _action_time(context, self.reference_action_id)
+        if reference_time is None:
+            return _not_evaluated("EGT stimulus action was not executed")
+        threshold = next(
+            (
+                snapshot
+                for snapshot in context.snapshots
+                if snapshot.simulation_time_s >= reference_time
+                and snapshot.operating_state is EngineOperatingState.IGNITION
+                and snapshot.validated_exhaust_temperature_c is not None
+                and snapshot.validated_exhaust_temperature_c
+                >= snapshot.egt_maximum_temperature_c
+            ),
+            None,
+        )
+        if threshold is None:
+            return EvaluationOutcome(
+                RequirementStatus.FAIL,
+                RequirementEvidence(
+                    expected_value="validated EGT at calibrated maximum",
+                    start_time_s=reference_time,
+                    relevant_action_id=self.reference_action_id,
+                ),
+                "Validated EGT did not reach the maximum during IGNITION",
+                "START_EGT_LIMIT_NOT_REACHED",
+            )
+        cutoff = next(
+            (
+                snapshot
+                for snapshot in context.snapshots
+                if snapshot.simulation_time_s + self.tolerance_s
+                >= threshold.simulation_time_s
+                and abs(snapshot.allowed_fuel_command) <= self.tolerance_s
+            ),
+            None,
+        )
+        if cutoff is None:
+            return EvaluationOutcome(
+                RequirementStatus.FAIL,
+                RequirementEvidence(
+                    measured_value=threshold.validated_exhaust_temperature_c,
+                    expected_value=0.0,
+                    upper_limit=self.maximum_response_time_s,
+                    start_time_s=threshold.simulation_time_s,
+                ),
+                "Zero fuel was not observed after the EGT maximum",
+                "START_EGT_FUEL_CUTOFF_NOT_OBSERVED",
+            )
+        elapsed = max(0.0, cutoff.simulation_time_s - threshold.simulation_time_s)
+        passed = elapsed <= self.maximum_response_time_s + self.tolerance_s
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=cutoff.allowed_fuel_command,
+                expected_value=0.0,
+                upper_limit=self.maximum_response_time_s,
+                tolerance=self.tolerance_s,
+                margin=self.maximum_response_time_s - elapsed,
+                evaluation_time_s=cutoff.simulation_time_s,
+                start_time_s=threshold.simulation_time_s,
+                elapsed_time_s=elapsed,
+                engine_state=threshold.operating_state.value,
+                relevant_action_id=self.reference_action_id,
+            ),
+            f"EGT-limit fuel cutoff completed in {elapsed:.3f} s",
+            None if passed else "START_EGT_FUEL_CUTOFF_TOO_SLOW",
+        )
+
+
+@dataclass(frozen=True)
+class ThrottleScheduleRequirementEvaluator:
+    """Verify service clamping and a linear scheduled-speed characteristic."""
+
+    test_points: tuple[tuple[str, float], ...]
+    settle_delay_s: float = 0.05
+    tolerance_rpm: float = 1.0
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        samples: list[tuple[float, float, float, float]] = []
+        for index, (action_id, requested_throttle) in enumerate(self.test_points):
+            action_time = _action_time(context, action_id)
+            if action_time is None:
+                return _not_evaluated(f"throttle action {action_id} was not executed")
+            next_time = None
+            if index + 1 < len(self.test_points):
+                next_time = _action_time(context, self.test_points[index + 1][0])
+            expected_throttle = min(max(requested_throttle, 0.0), 1.0)
+            sample = next(
+                (
+                    snapshot
+                    for snapshot in context.snapshots
+                    if snapshot.simulation_time_s
+                    >= action_time + self.settle_delay_s
+                    and (
+                        next_time is None
+                        or snapshot.simulation_time_s < next_time
+                    )
+                    and snapshot.speed_control_enabled
+                    and abs(snapshot.throttle_demand - expected_throttle)
+                    <= 1.0e-9
+                ),
+                None,
+            )
+            if sample is None:
+                return _not_evaluated(
+                    f"no settled schedule sample for action {action_id}"
+                )
+            samples.append(
+                (
+                    requested_throttle,
+                    sample.throttle_demand,
+                    sample.speed_setpoint_rpm,
+                    sample.simulation_time_s,
+                )
+            )
+        idle_candidates = [sample[2] for sample in samples if sample[1] == 0.0]
+        maximum_candidates = [sample[2] for sample in samples if sample[1] == 1.0]
+        if not idle_candidates or not maximum_candidates:
+            return _not_evaluated("schedule endpoints were not captured")
+        idle_speed = idle_candidates[0]
+        maximum_speed = maximum_candidates[0]
+        errors = []
+        for requested, accepted, setpoint, time_s in samples:
+            clamped = min(max(requested, 0.0), 1.0)
+            expected = idle_speed + clamped * (maximum_speed - idle_speed)
+            errors.append((abs(setpoint - expected), time_s, requested, accepted))
+        worst_error, worst_time, requested, accepted = max(errors)
+        passed = (
+            maximum_speed > idle_speed
+            and worst_error <= self.tolerance_rpm
+            and all(
+                abs(accepted - min(max(requested, 0.0), 1.0)) <= 1.0e-9
+                for _, _, requested, accepted in errors
+            )
+        )
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=worst_error,
+                expected_value="linear clamped schedule",
+                upper_limit=self.tolerance_rpm,
+                tolerance=self.tolerance_rpm,
+                margin=self.tolerance_rpm - worst_error,
+                evaluation_time_s=worst_time,
+                diagnostic_message=(
+                    f"idle={idle_speed:.3f}, maximum={maximum_speed:.3f} rpm"
+                ),
+            ),
+            f"Maximum throttle-schedule error was {worst_error:.6g} rpm",
+            None if passed else "THROTTLE_SCHEDULE_MISMATCH",
+        )
+
+
+@dataclass(frozen=True)
+class EgtLimiterCharacteristicRequirementEvaluator:
+    """Verify bounded, increasing fuel reduction through the EGT region."""
+
+    reference_action_id: str
+    end_action_id: str
+    monotonic_tolerance: float = 0.03
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        start_time = _action_time(context, self.reference_action_id)
+        end_time = _action_time(context, self.end_action_id)
+        if start_time is None or end_time is None:
+            return _not_evaluated("EGT stimulus and clear actions must execute")
+        samples: list[tuple[float, float, SimulationSnapshot]] = []
+        for snapshot in context.snapshots:
+            egt = snapshot.validated_exhaust_temperature_c
+            if (
+                egt is None
+                or not start_time <= snapshot.simulation_time_s <= end_time
+                or egt <= snapshot.egt_intervention_temperature_c
+            ):
+                continue
+            reduction = snapshot.requested_fuel_command - snapshot.egt_fuel_limit
+            samples.append((egt, reduction, snapshot))
+        if not samples:
+            return _not_evaluated("no EGT intervention samples were captured")
+        ordered = sorted(samples, key=lambda sample: sample[0])
+        first_violation = None
+        maximum_drop = 0.0
+        previous_reduction = ordered[0][1]
+        for _, reduction, snapshot in ordered[1:]:
+            drop = previous_reduction - reduction
+            maximum_drop = max(maximum_drop, drop)
+            if drop > self.monotonic_tolerance and first_violation is None:
+                first_violation = snapshot.simulation_time_s
+            previous_reduction = max(previous_reduction, reduction)
+        hottest = max(samples, key=lambda sample: sample[0])
+        passed = (
+            first_violation is None
+            and all(reduction > 0.0 for _, reduction, _ in samples)
+            and all(
+                sample.egt_fuel_limit
+                <= sample.requested_fuel_command + 1.0e-9
+                for _, _, sample in samples
+            )
+            and hottest[0]
+            >= hottest[2].egt_maximum_temperature_c - 5.0
+        )
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=hottest[1],
+                expected_value="positive monotonic EGT fuel reduction",
+                tolerance=self.monotonic_tolerance,
+                evaluation_time_s=hottest[2].simulation_time_s,
+                start_time_s=start_time,
+                end_time_s=end_time,
+                first_violation_time_s=first_violation,
+                maximum_violation=maximum_drop,
+                relevant_action_id=self.reference_action_id,
+            ),
+            "EGT fuel reduction increased through the intervention region"
+            if passed
+            else "EGT limiter characteristic was not monotonic or bounded",
+            None if passed else "EGT_LIMITER_CHARACTERISTIC_MISMATCH",
+        )
+
+
+@dataclass(frozen=True)
+class TrueEgtWithinConfiguredLimitRequirementEvaluator:
+    """Verify plant-truth EGT against the active profile transient limit."""
+
+    reference_action_id: str | None = None
+    tolerance_c: float = 0.0
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        reference_time = _action_time(context, self.reference_action_id)
+        if self.reference_action_id is not None and reference_time is None:
+            return _not_evaluated("reference action was not executed")
+        samples = tuple(
+            snapshot
+            for snapshot in context.snapshots
+            if reference_time is None
+            or snapshot.simulation_time_s >= reference_time
+        )
+        if not samples:
+            return _not_evaluated("no true-EGT samples were captured")
+        worst = max(
+            samples,
+            key=lambda snapshot: (
+                snapshot.exhaust_temperature_c
+                - snapshot.egt_maximum_temperature_c
+            ),
+        )
+        exceedance = (
+            worst.exhaust_temperature_c
+            - worst.egt_maximum_temperature_c
+        )
+        passed = exceedance <= self.tolerance_c
+        first_violation = next(
+            (
+                snapshot.simulation_time_s
+                for snapshot in samples
+                if snapshot.exhaust_temperature_c
+                > snapshot.egt_maximum_temperature_c + self.tolerance_c
+            ),
+            None,
+        )
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=worst.exhaust_temperature_c,
+                upper_limit=worst.egt_maximum_temperature_c,
+                tolerance=self.tolerance_c,
+                margin=-exceedance,
+                evaluation_time_s=worst.simulation_time_s,
+                first_violation_time_s=first_violation,
+                relevant_action_id=self.reference_action_id,
+            ),
+            (
+                "True EGT remained within the configured transient limit"
+                if passed
+                else "True EGT exceeded the configured transient limit"
+            ),
+            None if passed else "TRUE_EGT_LIMIT_EXCEEDED",
+        )
+
+
+@dataclass(frozen=True)
+class ProtectionArbitrationRequirementEvaluator:
+    """Reconstruct and verify final fuel arbitration from snapshot candidates."""
+
+    reference_action_id: str | None = None
+    require_concurrent_limits: bool = False
+    require_hard_cutoff: bool = False
+    tolerance: float = 1.0e-9
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        start_time = _action_time(context, self.reference_action_id)
+        if self.reference_action_id is not None and start_time is None:
+            return _not_evaluated("arbitration reference action was not executed")
+        evaluated = tuple(
+            snapshot
+            for snapshot in context.snapshots
+            if start_time is None or snapshot.simulation_time_s >= start_time
+        )
+        if not evaluated:
+            return _not_evaluated("no arbitration snapshots were captured")
+        first_violation = None
+        maximum_error = 0.0
+        concurrent_seen = False
+        hard_cutoff_seen = False
+        worst_snapshot = evaluated[0]
+        for snapshot in evaluated:
+            requested = min(max(snapshot.requested_fuel_command, 0.0), 1.0)
+            hard_cutoff_seen |= snapshot.protection_hard_cutoff_active
+            active_reasons = set(snapshot.protection_diagnostic_reasons)
+            concurrent_seen |= (
+                ProtectionDiagnosticReason.EGT_LIMITING in active_reasons
+                and ProtectionDiagnosticReason.ACCELERATION_LIMITING
+                in active_reasons
+            )
+            if snapshot.protection_hard_cutoff_active:
+                expected = 0.0
+            else:
+                upper_limits = [snapshot.state_maximum_fuel_command]
+                if ProtectionDiagnosticReason.EGT_LIMITING in active_reasons:
+                    upper_limits.append(snapshot.egt_fuel_limit)
+                if (
+                    ProtectionDiagnosticReason.ACCELERATION_LIMITING
+                    in active_reasons
+                ):
+                    upper_limits.append(snapshot.acceleration_fuel_limit)
+                if (
+                    ProtectionDiagnosticReason.SOFT_OVERSPEED in active_reasons
+                ):
+                    upper_limits.append(snapshot.overspeed_fuel_limit)
+                safety_upper = min(upper_limits)
+                lower = 0.0
+                if (
+                    ProtectionDiagnosticReason.DECELERATION_LIMITING
+                    in active_reasons
+                ):
+                    lower = max(
+                        0.0,
+                        snapshot.deceleration_minimum_fuel_command,
+                    )
+                expected = min(max(requested, lower), safety_upper)
+            error = abs(snapshot.allowed_fuel_command - expected)
+            if error > maximum_error:
+                maximum_error = error
+                worst_snapshot = snapshot
+            if error > self.tolerance and first_violation is None:
+                first_violation = snapshot.simulation_time_s
+        passed = (
+            first_violation is None
+            and (not self.require_concurrent_limits or concurrent_seen)
+            and (not self.require_hard_cutoff or hard_cutoff_seen)
+        )
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=maximum_error,
+                expected_value="minimum valid safety limit with cutoff priority",
+                upper_limit=self.tolerance,
+                tolerance=self.tolerance,
+                margin=self.tolerance - maximum_error,
+                evaluation_time_s=worst_snapshot.simulation_time_s,
+                first_violation_time_s=first_violation,
+                diagnostic_message=(
+                    f"concurrent={concurrent_seen}, hard_cutoff={hard_cutoff_seen}"
+                ),
+            ),
+            "Protection arbitration matched every captured candidate set"
+            if passed
+            else "Protection arbitration evidence was incomplete or inconsistent",
+            None if passed else "PROTECTION_ARBITRATION_MISMATCH",
+        )
+
+
+@dataclass(frozen=True)
+class SensorFaultMatrixRequirementEvaluator:
+    """Verify supported fault types, per-clear recovery, and bounded fuel."""
+
+    channel: SensorChannel
+    expected_fault_types: tuple[str, ...] = (
+        "bias",
+        "drift",
+        "stuck",
+        "dropout",
+        "forced_value",
+        "excessive_noise",
+    )
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        channel_text = f"{self.channel.value} sensor"
+        injected = tuple(
+            event
+            for event in context.events
+            if event.event_type is EventType.SENSOR_FAULT_INJECTED
+            and channel_text in event.message.lower()
+        )
+        cleared = tuple(
+            event
+            for event in context.events
+            if event.event_type is EventType.SENSOR_FAULT_CLEARED
+            and channel_text in event.message.lower()
+        )
+        observed_types = tuple(
+            dict.fromkeys(
+                event.diagnostic_code
+                for event in injected
+                if event.diagnostic_code is not None
+            )
+        )
+        missing = tuple(
+            fault_type
+            for fault_type in self.expected_fault_types
+            if fault_type not in observed_types
+        )
+        recovery_failed = False
+        for index, clear_event in enumerate(cleared):
+            next_injection_time = (
+                injected[index + 1].simulation_time_s
+                if index + 1 < len(injected)
+                else math.inf
+            )
+            recovered = any(
+                clear_event.simulation_time_s <= snapshot.simulation_time_s
+                < next_injection_time
+                and self._health(snapshot) is ChannelHealth.VALID
+                and self._fault_type(snapshot) == "none"
+                for snapshot in context.snapshots
+            )
+            recovery_failed |= not recovered
+        fuel_violation = next(
+            (
+                snapshot
+                for snapshot in context.snapshots
+                if not 0.0 <= snapshot.allowed_fuel_command <= 1.0
+            ),
+            None,
+        )
+        passed = (
+            not missing
+            and len(cleared) == len(injected)
+            and not recovery_failed
+            and fuel_violation is None
+        )
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=",".join(observed_types),
+                expected_value=",".join(self.expected_fault_types),
+                evaluation_time_s=(
+                    None if not cleared else cleared[-1].simulation_time_s
+                ),
+                first_violation_time_s=(
+                    None
+                    if fuel_violation is None
+                    else fuel_violation.simulation_time_s
+                ),
+                diagnostic_message=(
+                    f"missing={missing}, clears={len(cleared)}/{len(injected)}, "
+                    f"recovery_failed={recovery_failed}"
+                ),
+            ),
+            "Complete sensor-fault matrix and recovery were observed"
+            if passed
+            else "Sensor-fault matrix evidence was incomplete",
+            None if passed else "SENSOR_FAULT_MATRIX_INCOMPLETE",
+        )
+
+    def _health(self, snapshot: SimulationSnapshot) -> ChannelHealth:
+        return (
+            snapshot.rotor_speed_health
+            if self.channel is SensorChannel.ROTOR_SPEED
+            else snapshot.exhaust_temperature_health
+        )
+
+    def _fault_type(self, snapshot: SimulationSnapshot) -> str:
+        return (
+            snapshot.rotor_speed_fault_type
+            if self.channel is SensorChannel.ROTOR_SPEED
+            else snapshot.exhaust_temperature_fault_type
+        )
+
+
+@dataclass(frozen=True)
+class AmbientConditionRequirementEvaluator:
+    """Verify controlled ambient inputs and finite bounded plant behavior."""
+
+    expected_temperature_c: float
+    expected_pressure_pa: float
+    tolerance: float = 1.0e-9
+
+    def evaluate(self, context: EvaluationContext) -> EvaluationOutcome:
+        if not context.snapshots:
+            return _not_evaluated("no ambient-condition snapshots were captured")
+        first_violation = None
+        maximum_error = 0.0
+        for snapshot in context.snapshots:
+            temperature_error = abs(
+                snapshot.ambient_temperature_c - self.expected_temperature_c
+            )
+            pressure_error = abs(
+                snapshot.ambient_pressure_pa - self.expected_pressure_pa
+            )
+            maximum_error = max(maximum_error, temperature_error, pressure_error)
+            valid = (
+                temperature_error <= self.tolerance
+                and pressure_error <= self.tolerance
+                and math.isfinite(snapshot.rotor_speed_rpm)
+                and snapshot.rotor_speed_rpm >= 0.0
+                and math.isfinite(snapshot.exhaust_temperature_c)
+                and 0.0 <= snapshot.allowed_fuel_command <= 1.0
+            )
+            if not valid and first_violation is None:
+                first_violation = snapshot.simulation_time_s
+        passed = first_violation is None
+        return EvaluationOutcome(
+            RequirementStatus.PASS if passed else RequirementStatus.FAIL,
+            RequirementEvidence(
+                measured_value=maximum_error,
+                expected_value=(
+                    f"{self.expected_temperature_c:g} C, "
+                    f"{self.expected_pressure_pa:g} Pa"
+                ),
+                upper_limit=self.tolerance,
+                tolerance=self.tolerance,
+                margin=self.tolerance - maximum_error,
+                first_violation_time_s=first_violation,
+            ),
+            "Ambient inputs remained controlled with finite bounded behavior"
+            if passed
+            else "Ambient inputs or plant outputs violated the controlled domain",
+            None if passed else "AMBIENT_CONDITION_MISMATCH",
         )
 
 

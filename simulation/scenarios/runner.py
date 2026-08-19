@@ -12,6 +12,7 @@ from simulation.application.factory import create_application
 from simulation.application.simulation_service import SimulationService
 from simulation.configuration.engine_definition import EngineDefinition
 from simulation.configuration.fadec_calibration import FadecCalibration
+from simulation.core.types import AmbientConditions
 from simulation.plants.config import PlantSelectionConfig
 from simulation.plants.factory import plant_selection_for
 from simulation.scenarios.actions import (
@@ -737,6 +738,10 @@ def _default_service_factory(
     telemetry_sampling_period_s = float(
         overrides.get("telemetry_sampling_period_s", 0.05)
     )
+    ambient_conditions = AmbientConditions(
+        temperature_c=float(overrides.get("ambient_temperature_c", 15.0)),
+        pressure_pa=float(overrides.get("ambient_pressure_pa", 101_325.0)),
+    )
     recorder = RunRecorder(
         RunRecorderParameters(
             base_directory=base_directory,
@@ -750,6 +755,7 @@ def _default_service_factory(
             scheduler_config=scheduler_config,
             sensor_random_seed=random_seed,
             recorder=recorder,
+            ambient_conditions=ambient_conditions,
             time_step_s=time_step_s,
         )
     if engine_definition is not None and fadec_calibration is not None:
@@ -768,6 +774,7 @@ def _default_service_factory(
             scheduler_config=scheduler_config,
             sensor_random_seed=random_seed,
             recorder=recorder,
+            ambient_conditions=ambient_conditions,
             time_step_s=time_step_s,
         )
     return create_application(
@@ -775,6 +782,7 @@ def _default_service_factory(
         scheduler_config=scheduler_config,
         sensor_random_seed=random_seed,
         recorder=recorder,
+        ambient_conditions=ambient_conditions,
         time_step_s=time_step_s,
     )
 

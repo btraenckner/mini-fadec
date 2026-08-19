@@ -9,11 +9,16 @@ import pytest
 
 from simulation.application.interactive_simulation import run_scripted_smoke_test
 from simulation.scenarios.definitions import Scenario
-from simulation.scenarios.library import get_scenario, list_scenarios
+from simulation.scenarios.library import (
+    get_scenario,
+    list_environment_scenarios,
+    list_scenarios,
+)
 from simulation.scenarios.runner import ScenarioRunner
 from simulation.scenarios.serialization import normalize_deterministic_result
 from simulation.telemetry.events import EventType
 from simulation.verification.results import ScenarioOverallStatus
+from simulation.verification.test_cases import fadec_test_case_catalog
 
 
 def _isolated_scenario(scenario: Scenario, base_directory: Path) -> Scenario:
@@ -56,6 +61,13 @@ def test_complete_regression_scenario_library_passes(scenario_results: dict) -> 
         "nominal_multirate_lifecycle",
         "nominal_multirate_throttle_transient",
         "nominal_multirate_rpm_dropout",
+        "fault_reset_interlock",
+        "hot_start_protection",
+        "hung_start_timeout",
+        "throttle_speed_schedule",
+        "egt_limiter_arbitration",
+        "rpm_sensor_fault_matrix",
+        "egt_sensor_fault_matrix",
     }
     assert all(
         result.overall_status is ScenarioOverallStatus.PASS
@@ -162,6 +174,7 @@ def test_soft_and_hard_overspeed_use_validated_fault_path(
 def test_run_artifacts_match_in_memory_verification_results(
     scenario_results: dict,
 ) -> None:
+    test_case_catalog = fadec_test_case_catalog()
     for result in scenario_results.values():
         assert result.run_directory is not None
         assert {
@@ -175,16 +188,36 @@ def test_run_artifacts_match_in_memory_verification_results(
         requirements = json.loads(
             result.requirements_path.read_text(encoding="utf-8")
         )
+        metadata = json.loads(
+            result.metadata_path.read_text(encoding="utf-8")
+        )
         report = result.report_path.read_text(encoding="utf-8")
+        expected_test_case_ids = [
+            case.test_case_id
+            for case in test_case_catalog.for_scenario(result.scenario_id)
+        ]
+        expected_requirement_ids = list(
+            test_case_catalog.requirement_ids_for_scenario(result.scenario_id)
+        )
 
+        assert requirements["report_schema_version"] == "1.2"
         assert requirements["overall_result"] == result.overall_status.value
         assert requirements["scheduler"]["preset"] == result.scheduler_preset
         assert requirements["scheduler"]["tasks"]
         assert [
             item["status"] for item in requirements["requirement_results"]
         ] == [item.status.value for item in result.requirement_results]
+        assert requirements["traceability"] == {
+            "test_case_ids": expected_test_case_ids,
+            "baseline_requirement_ids": expected_requirement_ids,
+        }
+        assert expected_test_case_ids
+        assert expected_requirement_ids
+        assert metadata["formal_test_case_ids"] == expected_test_case_ids
+        assert metadata["baseline_requirement_ids"] == expected_requirement_ids
         assert f"Scenario result:** {result.overall_status.value}" in report
         assert f"Scheduler preset: {result.scheduler_preset}" in report
+        assert f"Formal test cases: {', '.join(expected_test_case_ids)}" in report
 
 
 def test_repeated_scenario_runs_have_equivalent_normalized_results_and_csv(
@@ -212,6 +245,38 @@ def test_all_scenario_final_fuel_commands_remain_bounded(
         assert all(
             0.0 <= float(row["allowed_fuel_command"]) <= 1.0
             for row in _read_csv(result.telemetry_path)
+        )
+
+
+def test_ambient_challenge_scenarios_propagate_controlled_inputs(
+    tmp_path: Path,
+) -> None:
+    expected_points = {
+        "SCN-ENV-001": (-20.0, 80_000.0),
+        "SCN-ENV-002": (15.0, 101_325.0),
+        "SCN-ENV-003": (40.0, 105_000.0),
+    }
+
+    for scenario in list_environment_scenarios():
+        result = ScenarioRunner().run_scenario(
+            _isolated_scenario(scenario, tmp_path / scenario.name)
+        )
+        rows = _read_csv(result.telemetry_path)
+        expected_temperature, expected_pressure = expected_points[
+            scenario.scenario_id
+        ]
+
+        assert result.overall_status is ScenarioOverallStatus.PASS
+        assert {
+            float(row["ambient_temperature_c"]) for row in rows
+        } == {expected_temperature}
+        assert {
+            float(row["ambient_pressure_pa"]) for row in rows
+        } == {expected_pressure}
+        assert any(
+            item.requirement_id.endswith("-AMBIENT")
+            and item.status.value == "PASS"
+            for item in result.requirement_results
         )
 
 

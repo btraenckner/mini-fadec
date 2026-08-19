@@ -62,6 +62,12 @@ Selectable public-data engine examples and their explicit modelling
 limitations are documented in
 [docs/configuration/real_engine_profiles.md](docs/configuration/real_engine_profiles.md).
 
+The draft requirements baseline and its current verification trace are defined
+in [docs/requirements/fadec_control_requirements.md](docs/requirements/fadec_control_requirements.md)
+and [docs/verification/requirements_traceability_matrix.md](docs/verification/requirements_traceability_matrix.md).
+The corresponding formal procedures are indexed in
+[docs/verification/test_case_catalog.md](docs/verification/test_case_catalog.md).
+
 ## Safety Notice
 
 This project is intended for educational and experimental purposes.
