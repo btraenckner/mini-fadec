@@ -56,6 +56,7 @@ class LiveEngineDashboard:
 
         self._closed = False
         self._plant_selection_updating = False
+        self._engine_profile_selection_updating = False
         self._last_displayed_event_sequence = 0
         self._last_update_time = time.monotonic()
         self._figure, self._plot_axes = self._create_figure()
@@ -324,7 +325,7 @@ class LiveEngineDashboard:
         self._update_scenario_status()
 
     def _create_plant_panel(self) -> None:
-        """Create the stopped-only plant selector and diagnostics overlay."""
+        """Create stopped-only engine-profile and plant-model selectors."""
 
         panel_axis = self._figure.add_axes((0.425, 0.12, 0.55, 0.75))
         panel_axis.set_facecolor(self._PANEL_COLOR)
@@ -337,7 +338,7 @@ class LiveEngineDashboard:
         panel_axis.text(
             0.035,
             0.955,
-            "ENGINE PLANT MODEL",
+            "ENGINE PROFILE / PLANT MODEL",
             transform=panel_axis.transAxes,
             fontsize=11,
             fontweight="bold",
@@ -356,20 +357,66 @@ class LiveEngineDashboard:
         )
         panel_axis.text(
             0.035,
-            0.795,
-            "SELECT MODEL  /  STOPPED ONLY",
+            0.790,
+            "SELECT ENGINE PROFILE  /  STOPPED ONLY",
             transform=panel_axis.transAxes,
             fontsize=7.5,
             fontweight="bold",
             color=self._MUTED_TEXT_COLOR,
         )
 
+        profiles = self.dashboard_simulation.available_engine_profiles()
+        profile_labels = tuple(profile.display_name for profile in profiles)
+        selected_profile_id = (
+            self.dashboard_simulation.selected_engine_profile_id
+        )
+        profile_ids = tuple(profile.profile_id for profile in profiles)
+        active_profile_index = (
+            profile_ids.index(selected_profile_id)
+            if selected_profile_id in profile_ids
+            else 0
+        )
+        profile_selector_axis = self._figure.add_axes(
+            (0.455, 0.635, 0.43, 0.075)
+        )
+        profile_selector_axis.set_zorder(33)
+        self._style_widget_axis(profile_selector_axis)
+        self._engine_profile_selector = RadioButtons(
+            profile_selector_axis,
+            profile_labels,
+            active=active_profile_index,
+            activecolor=self._ACCENT_COLOR,
+            useblit=False,
+            radio_props={
+                "edgecolor": self._MUTED_TEXT_COLOR,
+                "linewidth": 0.8,
+                "s": 30.0,
+            },
+        )
+        for label in self._engine_profile_selector.labels:
+            label.set_fontsize(7.3)
+            label.set_color(self._TEXT_COLOR)
+        self._engine_profile_selector.on_clicked(
+            self._on_engine_profile_selected
+        )
+        self._engine_profiles = profiles
+        self._engine_profile_labels = profile_labels
+
+        panel_axis.text(
+            0.035,
+            0.675,
+            "SELECT PLANT BACKEND  /  STOPPED ONLY",
+            transform=panel_axis.transAxes,
+            fontsize=7.5,
+            fontweight="bold",
+            color=self._MUTED_TEXT_COLOR,
+        )
         models = self.dashboard_simulation.available_plant_models()
         labels = tuple(model.display_name for model in models)
         active_index = tuple(model.model for model in models).index(
             self.dashboard_simulation.selected_plant_model
         )
-        selector_axis = self._figure.add_axes((0.455, 0.625, 0.35, 0.075))
+        selector_axis = self._figure.add_axes((0.455, 0.545, 0.35, 0.060))
         selector_axis.set_zorder(33)
         self._style_widget_axis(selector_axis)
         self._plant_model_selector = RadioButtons(
@@ -393,8 +440,8 @@ class LiveEngineDashboard:
 
         panel_axis.text(
             0.035,
-            0.630,
-            "ACTIVE CONFIGURATION  /  UNVALIDATED ASSUMPTIONS",
+            0.555,
+            "ACTIVE CONFIGURATION  /  MODEL ASSUMPTIONS",
             transform=panel_axis.transAxes,
             fontsize=7.5,
             fontweight="bold",
@@ -402,7 +449,7 @@ class LiveEngineDashboard:
         )
         self._plant_configuration_text = panel_axis.text(
             0.035,
-            0.595,
+            0.520,
             "",
             transform=panel_axis.transAxes,
             fontsize=5.6,
@@ -413,7 +460,7 @@ class LiveEngineDashboard:
         )
         panel_axis.text(
             0.535,
-            0.630,
+            0.555,
             "PATHSIM DYNAMICS  /  READ ONLY",
             transform=panel_axis.transAxes,
             fontsize=7.5,
@@ -422,7 +469,7 @@ class LiveEngineDashboard:
         )
         self._plant_diagnostics_text = panel_axis.text(
             0.535,
-            0.595,
+            0.520,
             "",
             transform=panel_axis.transAxes,
             fontsize=6.4,
@@ -434,7 +481,7 @@ class LiveEngineDashboard:
         self._plant_feedback_text = panel_axis.text(
             0.035,
             0.045,
-            "Changing the model creates a fresh, fully reset application.",
+            "Changing the profile or backend creates a fresh, reset application.",
             transform=panel_axis.transAxes,
             fontsize=7,
             color=self._MUTED_TEXT_COLOR,
@@ -447,6 +494,7 @@ class LiveEngineDashboard:
         )
         close_button.ax.set_zorder(34)
         self._plant_panel_axis = panel_axis
+        self._engine_profile_selector_axis = profile_selector_axis
         self._plant_selector_axis = selector_axis
         self._plant_close_button = close_button
         self._plant_panel_visible = False
@@ -1560,13 +1608,43 @@ class LiveEngineDashboard:
         was_visible = self._plant_selector_axis.get_visible()
         self._plant_panel_visible = visible
         self._plant_panel_axis.set_visible(visible)
+        self._engine_profile_selector_axis.set_visible(visible)
         self._plant_selector_axis.set_visible(visible)
+        self._engine_profile_selector.active = visible
         self._plant_model_selector.active = visible
         self._plant_close_button.ax.set_visible(visible)
         if was_visible and not visible:
             # RadioButtons can otherwise leave their last marker collection
             # over the live plots after the plant overlay is closed.
             self._figure.canvas.draw()
+
+    def _on_engine_profile_selected(self, profile_label: str) -> None:
+        """Apply a stopped-only engine and matching FADEC calibration."""
+
+        if self._engine_profile_selection_updating:
+            return
+        try:
+            profile_index = self._engine_profile_labels.index(profile_label)
+            profile = self._engine_profiles[profile_index]
+            self.dashboard_simulation.select_engine_profile(
+                profile.profile_id
+            )
+        except (KeyError, RuntimeError, ValueError) as error:
+            self._plant_feedback_text.set_text(
+                f"Profile selection rejected: {error}"
+            )
+            self._plant_feedback_text.set_color(self._DANGER_COLOR)
+            self._synchronize_engine_profile_selector()
+        else:
+            self._plant_feedback_text.set_text(
+                "Selected engine definition and matching FADEC calibration; "
+                "state reset."
+            )
+            self._plant_feedback_text.set_color(self._SUCCESS_COLOR)
+        self._update_plant_panel(
+            self.dashboard_simulation.get_latest_snapshot()
+        )
+        self._figure.canvas.draw_idle()
 
     def _on_plant_selected(self, model_label: str) -> None:
         """Apply a stopped-only model selection through the application service."""
@@ -1609,7 +1687,11 @@ class LiveEngineDashboard:
             if pathsim_diagnostics is not None
             else "algebraic / explicit Euler update"
         )
+        profile = self.dashboard_simulation.get_engine_profile_metadata()
+        profile_name = str(profile.get("display_name", "Custom composition"))
+        fidelity = str(profile.get("fidelity", "custom / unspecified"))
         self._plant_summary_text.set_text(
+            f"{profile_name}  |  evidence: {fidelity}\n"
             f"{snapshot.plant_display_name}  |  model {snapshot.plant_model_version}\n"
             f"solver {solver}  |  plant period "
             f"{plant_task.effective_period_s * 1_000.0:g} ms  |  "
@@ -1644,6 +1726,7 @@ class LiveEngineDashboard:
                 f"PathSim version    {pathsim_diagnostics.pathsim_version:>9s}"
             )
         self._synchronize_plant_selector(snapshot.plant_model_id)
+        self._synchronize_engine_profile_selector()
         compact_model = (
             "PS" if snapshot.plant_model_id == "pathsim_greybox_v1" else "FO"
         )
@@ -1670,6 +1753,27 @@ class LiveEngineDashboard:
         self._plant_model_selector.set_active(matching_index)
         self._plant_model_selector.eventson = previous_event_state
         self._plant_selection_updating = False
+
+    def _synchronize_engine_profile_selector(self) -> None:
+        """Update the profile marker without recursively changing engines."""
+
+        selected_id = self.dashboard_simulation.selected_engine_profile_id
+        matching_index = next(
+            (
+                index
+                for index, profile in enumerate(self._engine_profiles)
+                if profile.profile_id == selected_id
+            ),
+            None,
+        )
+        if matching_index is None:
+            return
+        self._engine_profile_selection_updating = True
+        previous_event_state = self._engine_profile_selector.eventson
+        self._engine_profile_selector.eventson = False
+        self._engine_profile_selector.set_active(matching_index)
+        self._engine_profile_selector.eventson = previous_event_state
+        self._engine_profile_selection_updating = False
 
     @classmethod
     def _format_plant_configuration(cls, configuration: object) -> str:

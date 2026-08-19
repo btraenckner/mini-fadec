@@ -10,7 +10,10 @@ from pathlib import Path
 
 from simulation.application.factory import create_application
 from simulation.application.simulation_service import SimulationService
+from simulation.configuration.engine_definition import EngineDefinition
+from simulation.configuration.fadec_calibration import FadecCalibration
 from simulation.plants.config import PlantSelectionConfig
+from simulation.plants.factory import plant_selection_for
 from simulation.scenarios.actions import (
     ActionExecutionStatus,
     ActionResult,
@@ -83,14 +86,28 @@ class ScenarioRunner:
         wall_clock: Callable[[], datetime] | None = None,
         scheduler_preset: str | None = None,
         plant_config: PlantSelectionConfig | None = None,
+        engine_profile: str | None = None,
+        engine_definition: EngineDefinition | None = None,
+        fadec_calibration: FadecCalibration | None = None,
     ) -> None:
-        self._service_factory = service_factory or _default_service_factory
+        if (engine_definition is None) != (fadec_calibration is None):
+            raise ValueError(
+                "engine_definition and fadec_calibration must be provided together"
+            )
+        if engine_profile is not None and engine_definition is not None:
+            raise ValueError(
+                "engine_profile cannot be combined with an explicit engine pair"
+            )
+        self._service_factory = service_factory
         self._paced = paced
         self._sleeper = sleeper
         self._performance_clock = performance_clock
         self._wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
         self._scheduler_preset = scheduler_preset
         self._plant_config = plant_config
+        self._engine_profile = engine_profile
+        self._engine_definition = engine_definition
+        self._fadec_calibration = fadec_calibration
         self._scenario: Scenario | None = None
         self._service: SimulationService | None = None
         self._execution_state = ScenarioExecutionState.NOT_STARTED
@@ -124,7 +141,15 @@ class ScenarioRunner:
             raise RuntimeError("a scenario is already running")
         effective_scenario = self._scenario_with_runtime_overrides(scenario)
         self._scenario = effective_scenario
-        self._service = self._service_factory(effective_scenario)
+        if self._service_factory is not None:
+            self._service = self._service_factory(effective_scenario)
+        else:
+            self._service = _default_service_factory(
+                effective_scenario,
+                engine_profile=self._engine_profile,
+                engine_definition=self._engine_definition,
+                fadec_calibration=self._fadec_calibration,
+            )
         self._execution_state = ScenarioExecutionState.RUNNING
         self._action_results = {
             action.action_id: ActionResult(
@@ -690,7 +715,13 @@ def run_scenario(scenario: Scenario) -> ScenarioResult:
     return ScenarioRunner().run_scenario(scenario)
 
 
-def _default_service_factory(scenario: Scenario) -> SimulationService:
+def _default_service_factory(
+    scenario: Scenario,
+    *,
+    engine_profile: str | None = None,
+    engine_definition: EngineDefinition | None = None,
+    fadec_calibration: FadecCalibration | None = None,
+) -> SimulationService:
     overrides = dict(scenario.configuration_overrides)
     time_step_s = scenario.time_step_s or 0.01
     scheduler_config = get_scheduler_preset(
@@ -712,6 +743,33 @@ def _default_service_factory(scenario: Scenario) -> SimulationService:
             telemetry_sampling_period_s=telemetry_sampling_period_s,
         )
     )
+    if engine_profile is not None:
+        return create_application(
+            engine_profile=engine_profile,
+            plant_config=scenario.plant_config_override,
+            scheduler_config=scheduler_config,
+            sensor_random_seed=random_seed,
+            recorder=recorder,
+            time_step_s=time_step_s,
+        )
+    if engine_definition is not None and fadec_calibration is not None:
+        effective_definition = engine_definition
+        if scenario.plant_config_override is not None:
+            effective_definition = replace(
+                engine_definition,
+                plant=plant_selection_for(
+                    scenario.plant_config_override.model,
+                    base=engine_definition.plant,
+                ),
+            )
+        return create_application(
+            engine_definition=effective_definition,
+            fadec_calibration=fadec_calibration,
+            scheduler_config=scheduler_config,
+            sensor_random_seed=random_seed,
+            recorder=recorder,
+            time_step_s=time_step_s,
+        )
     return create_application(
         plant_config=scenario.plant_config_override,
         scheduler_config=scheduler_config,

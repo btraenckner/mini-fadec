@@ -1,5 +1,6 @@
 """Unit tests for live dashboard controls and telemetry history."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -357,3 +358,37 @@ def test_dashboard_rejects_plant_change_during_scenario(tmp_path: Path) -> None:
         dashboard_simulation.select_plant_model("pathsim_greybox_v1")
 
     dashboard_simulation.cancel_scenario()
+
+
+def test_dashboard_profile_selection_applies_to_manual_and_runner_paths(
+    tmp_path: Path,
+) -> None:
+    scenario = _short_dashboard_scenario(str(tmp_path))
+    dashboard_simulation = DashboardSimulation(scenarios=(scenario,))
+
+    selected_id = dashboard_simulation.select_engine_profile(
+        "jetcat-p1000-pro"
+    )
+    dashboard_simulation.enter_runner_mode()
+    progress = dashboard_simulation.start_selected_scenario()
+
+    assert selected_id == "jetcat-p1000-pro"
+    assert dashboard_simulation.selected_engine_profile_id == (
+        "jetcat-p1000-pro"
+    )
+    assert progress.latest_snapshot.exhaust_temperature_c == pytest.approx(
+        15.0
+    )
+    assert dashboard_simulation.get_plant_metadata()["configuration"][
+        "maximum_speed_rpm"
+    ] == pytest.approx(61_500.0)
+    dashboard_simulation.cancel_scenario()
+    assert progress.current_recording_directory is not None
+    metadata = json.loads(
+        (progress.current_recording_directory / "metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert metadata["configuration_summary"]["engine_profile_id"] == (
+        "jetcat-p1000-pro"
+    )

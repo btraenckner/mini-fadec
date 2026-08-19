@@ -60,7 +60,10 @@ def validate_engine_fadec_compatibility(
             "idle_speed",
             "scheduled idle speed must match the engine idle speed",
         )
-    if schedule.maximum_speed_rpm > envelope.maximum_continuous_speed_rpm:
+    if _greater(
+        schedule.maximum_speed_rpm,
+        envelope.maximum_continuous_speed_rpm,
+    ):
         add(
             "maximum_speed",
             "scheduled maximum exceeds the continuous engine-speed limit",
@@ -122,7 +125,7 @@ def validate_engine_fadec_compatibility(
             "overspeed_reference",
             "overspeed reference must match the scheduled maximum speed",
         )
-    if hard_overspeed_rpm > envelope.maximum_transient_speed_rpm:
+    if _greater(hard_overspeed_rpm, envelope.maximum_transient_speed_rpm):
         add(
             "hard_overspeed",
             "hard overspeed threshold exceeds the transient engine-speed limit",
@@ -271,3 +274,7 @@ def validate_engine_fadec_compatibility(
 
 def _equal(first: float, second: float) -> bool:
     return math.isclose(first, second, rel_tol=0.0, abs_tol=1.0e-9)
+
+
+def _greater(first: float, second: float) -> bool:
+    return first > second and not _equal(first, second)

@@ -165,11 +165,32 @@ def test_dashboard_hides_plant_selector_with_plant_panel() -> None:
     dashboard._on_plant_panel(None)
     assert dashboard._plant_selector_axis.get_visible()
     assert dashboard._plant_model_selector.active
+    assert dashboard._engine_profile_selector_axis.get_visible()
+    assert dashboard._engine_profile_selector.active
 
     dashboard._on_plant_panel(None)
 
     assert not dashboard._plant_selector_axis.get_visible()
     assert not dashboard._plant_model_selector.active
+    assert not dashboard._engine_profile_selector_axis.get_visible()
+    assert not dashboard._engine_profile_selector.active
+    dashboard.close(save_result=False)
+
+
+def test_dashboard_selects_engine_profile_and_displays_evidence_level() -> None:
+    dashboard = LiveEngineDashboard()
+
+    dashboard._on_plant_panel(None)
+    dashboard._on_engine_profile_selected("JetCat P1000-PRO")
+
+    assert dashboard.dashboard_simulation.selected_engine_profile_id == (
+        "jetcat-p1000-pro"
+    )
+    assert "JetCat P1000-PRO" in dashboard._plant_summary_text.get_text()
+    assert "public-data grey-box" in dashboard._plant_summary_text.get_text()
+    assert "matching FADEC calibration" in (
+        dashboard._plant_feedback_text.get_text()
+    )
     dashboard.close(save_result=False)
 
 

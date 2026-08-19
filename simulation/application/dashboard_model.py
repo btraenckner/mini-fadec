@@ -12,6 +12,8 @@ from simulation.application.engine_simulation import (
 )
 from simulation.application.factory import create_application
 from simulation.application.simulation_service import SimulationService
+from simulation.configuration.profile_types import EngineConfigurationProfile
+from simulation.configuration.profiles import list_engine_profiles
 from simulation.operation.engine_state import EngineOperatingState
 from simulation.plants.factory import list_plant_models
 from simulation.plants.types import (
@@ -558,6 +560,17 @@ class DashboardSimulation:
             else ScenarioRunner(
                 scheduler_preset=self._selected_scheduler_preset,
                 plant_config=self.service.coordinator.plant_config,
+                engine_profile=self.service.engine_profile_id,
+                engine_definition=(
+                    self.service.engine_definition
+                    if self.service.engine_profile_id is None
+                    else None
+                ),
+                fadec_calibration=(
+                    self.service.fadec_calibration
+                    if self.service.engine_profile_id is None
+                    else None
+                ),
             )
         )
         self._scenario_progress = self._scenario_runner.prepare_scenario(
@@ -677,6 +690,35 @@ class DashboardSimulation:
         if self.scenario_mode_active and self._scenario_runner is not None:
             return self._scenario_runner.get_plant_metadata()
         return self.service.get_plant_metadata()
+
+    @property
+    def selected_engine_profile_id(self) -> str | None:
+        """Return the profile selected for manual and default scenario runs."""
+
+        return self.service.engine_profile_id
+
+    def available_engine_profiles(
+        self,
+    ) -> tuple[EngineConfigurationProfile, ...]:
+        """Return fresh compatible profiles in stable dashboard order."""
+
+        return list_engine_profiles()
+
+    def select_engine_profile(self, profile_id: str) -> str:
+        """Select a fresh engine and FADEC pair while execution is stopped."""
+
+        if self.scenario_is_running:
+            raise RuntimeError("engine profile cannot change during a scenario")
+        selected = self.service.select_engine_profile(profile_id)
+        self.coordinator = self.service.coordinator
+        self.history.clear()
+        self.history.append(self.service.get_latest_snapshot())
+        return selected.profile_id
+
+    def get_engine_profile_metadata(self) -> dict[str, object]:
+        """Return the profile evidence and assumptions for dashboard display."""
+
+        return self.service.get_engine_profile_metadata()
 
     def close(self) -> None:
         """Finalize active dashboard-owned execution and recording resources."""
