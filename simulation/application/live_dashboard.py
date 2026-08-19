@@ -262,11 +262,28 @@ class LiveEngineDashboard:
         )
 
         scenario_labels = tuple(
-            f"{scenario.scenario_id} | "
-            f"{self._shorten(scenario.name.replace('_', ' '), 21)}"
+            f"{scenario.scenario_id} | {scenario.name.replace('_', ' ')}"
             for scenario in self.dashboard_simulation.scenarios
         )
-        dropdown_axis = self._figure.add_axes((0.520, 0.700, 0.205, 0.218))
+        dropdown_header_axis = self._figure.add_axes(
+            (0.408, 0.880, 0.572, 0.035)
+        )
+        self._style_widget_axis(dropdown_header_axis)
+        dropdown_header_axis.set_zorder(20)
+        dropdown_header_axis.set_xticks(())
+        dropdown_header_axis.set_yticks(())
+        dropdown_header_axis.text(
+            0.025,
+            0.5,
+            f"SELECT TESTCASE SCENARIO  /  {len(scenario_labels)} AVAILABLE",
+            transform=dropdown_header_axis.transAxes,
+            verticalalignment="center",
+            fontsize=9,
+            fontweight="bold",
+            color=self._TEXT_COLOR,
+        )
+
+        dropdown_axis = self._figure.add_axes((0.408, 0.060, 0.572, 0.820))
         self._style_widget_axis(dropdown_axis)
         dropdown_axis.set_zorder(20)
         self._scenario_dropdown_selector = RadioButtons(
@@ -278,17 +295,19 @@ class LiveEngineDashboard:
             radio_props={
                 "edgecolor": self._MUTED_TEXT_COLOR,
                 "linewidth": 0.8,
-                "s": 28.0,
+                "s": 36.0,
             },
         )
         for label in self._scenario_dropdown_selector.labels:
-            label.set_fontsize(7)
+            label.set_fontsize(8)
             label.set_color(self._TEXT_COLOR)
         self._scenario_dropdown_selector.on_clicked(
             self._on_scenario_selected
         )
         dropdown_axis.set_visible(False)
+        dropdown_header_axis.set_visible(False)
         self._scenario_dropdown_axis = dropdown_axis
+        self._scenario_dropdown_header_axis = dropdown_header_axis
         self._scenario_dropdown_labels = scenario_labels
 
         self._scenario_progress_text = self._figure.text(
@@ -1707,6 +1726,7 @@ class LiveEngineDashboard:
             return
         is_open = self._scenario_dropdown_axis.get_visible()
         self._scenario_dropdown_axis.set_visible(not is_open)
+        self._scenario_dropdown_header_axis.set_visible(not is_open)
         self._scenario_dropdown_selector.active = not is_open
         self._figure.canvas.draw_idle()
 
@@ -2169,6 +2189,7 @@ class LiveEngineDashboard:
 
         was_visible = self._scenario_dropdown_axis.get_visible()
         self._scenario_dropdown_axis.set_visible(False)
+        self._scenario_dropdown_header_axis.set_visible(False)
         self._scenario_dropdown_selector.active = False
         if was_visible:
             # RadioButtons can otherwise leave its last blitted circle
