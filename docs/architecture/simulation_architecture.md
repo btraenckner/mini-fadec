@@ -33,6 +33,9 @@ and simulation-only diagnostic comparisons use truth directly.
 
 ## Main Modules
 
+- `simulation/configuration/` separates versioned physical engine definitions
+  from versioned FADEC calibration and validates their compatibility before a
+  runtime is created.
 - `simulation/models/` contains rotor-speed and EGT plant dynamics plus
   algebraic thrust and fuel-flow estimates.
 - `simulation/sensors/` converts engine truth into measured rotor speed and
@@ -58,6 +61,38 @@ and simulation-only diagnostic comparisons use truth directly.
 The component boundaries use the protocols and data types in
 `simulation/core/`. Open-loop plant-only examples may inspect truth directly;
 closed-loop examples route feedback through fault injection and validation.
+
+## Engine Definition and FADEC Calibration
+
+Application construction has two independent typed inputs:
+
+- `EngineDefinition` describes what the software is connected to: engine
+  identity and version, selected plant backend and parameters, installed
+  sensor behavior, actuator command capability, and the approved physical
+  operating envelope.
+- `FadecCalibration` describes how the control software is tuned for that
+  engine: throttle-to-speed schedule, controller gains, state-machine
+  thresholds, sensor validation, and every centralized fuel-protection value.
+
+`create_application()` is the shared composition path for the dashboard and
+scenario runner. It validates the engine/calibration pair before constructing
+the plant or any stateful controller. Direct low-level component injection into
+`EngineSimulationCoordinator` remains available for focused tests.
+
+Compatibility validation rejects a calibration targeted at another engine,
+speed schedules or protection thresholds outside the operating envelope,
+sensor and validator ranges that cannot observe the protected limits,
+inconsistent start thresholds, unsupported starter or ignition commands, and
+fuel ranges outside the actuator interface. Dashboard plant and scheduler
+changes rebuild the runtime while retaining the same engine identity and FADEC
+calibration.
+
+Every recording captures the complete serialized engine definition and FADEC
+calibration in `metadata.json`, together with their identifiers and versions.
+This makes a result traceable to both the physical assumptions and software
+tuning that produced it. See
+[`docs/configuration/engine_definition_and_fadec_calibration.md`](../configuration/engine_definition_and_fadec_calibration.md)
+for the intended customization workflow.
 
 ## Sensor Model
 

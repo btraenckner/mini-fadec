@@ -22,6 +22,8 @@ def _context() -> RunMetadataContext:
         controller_identifier="controller",
         protection_manager_identifier="protection",
         configuration_summary=(("gain", 1.5), ("enabled", True)),
+        engine_definition={"engine_id": "test-engine"},
+        fadec_calibration={"calibration_id": "test-calibration"},
     )
 
 
@@ -50,6 +52,10 @@ def test_metadata_builder_has_stable_required_environment_fields() -> None:
         "gain": 1.5,
         "enabled": True,
     }
+    assert metadata["engine_definition"]["engine_id"] == "test-engine"
+    assert metadata["fadec_calibration"]["calibration_id"] == (
+        "test-calibration"
+    )
     assert metadata["python_version"]
     assert metadata["platform"]
     assert metadata["git_commit"] is None

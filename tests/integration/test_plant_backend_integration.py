@@ -176,6 +176,16 @@ def test_recording_contains_plant_snapshot_telemetry_and_metadata(
 
     assert metadata["plant_model_id"] == model_id
     assert metadata["plant_configuration"]
+    assert metadata["configuration_summary"]["engine_definition_id"] == (
+        "mini-fadec-reference-engine"
+    )
+    assert metadata["configuration_summary"]["fadec_calibration_id"] == (
+        "mini-fadec-reference-calibration"
+    )
+    assert metadata["engine_definition"]["plant"]["model"] == model_id
+    assert metadata["fadec_calibration"]["target_engine_id"] == (
+        "mini-fadec-reference-engine"
+    )
     assert rows[-1]["plant_model_id"] == model_id
     assert float(rows[-1]["plant_time_s"]) == pytest.approx(0.051)
     if model_id == "first_order":
