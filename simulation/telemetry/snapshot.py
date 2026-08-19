@@ -15,7 +15,7 @@ from simulation.validation.sensor_validation import (
 )
 
 
-TELEMETRY_SCHEMA_VERSION = "1.2"
+TELEMETRY_SCHEMA_VERSION = "1.3"
 
 FaultParameterValue: TypeAlias = float | str | bool | None
 FaultParameters: TypeAlias = tuple[tuple[str, FaultParameterValue], ...]
@@ -41,6 +41,8 @@ class SimulationSnapshot:
     previous_operating_state: EngineOperatingState
     operating_state: EngineOperatingState
     state_duration_s: float
+    start_elapsed_s: float
+    start_timeout_triggered: bool
     starter_commanded: bool
     ignition_commanded: bool
     speed_control_enabled: bool
@@ -77,6 +79,7 @@ class SimulationSnapshot:
     exhaust_temperature_fault: str
     exhaust_temperature_fault_type: str
     exhaust_temperature_fault_parameters: FaultParameters
+    fuel_delivery_fault_active: bool
 
     egt_fuel_limit: float
     egt_intervention_temperature_c: float
@@ -122,6 +125,8 @@ class SimulationSnapshot:
     plant_model_id: str
     plant_display_name: str
     plant_model_version: str
+    ambient_temperature_c: float
+    ambient_pressure_pa: float
     plant_time_s: float
     plant_step_count: int
     plant_diagnostics: PathSimPlantDiagnostics | None

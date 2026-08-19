@@ -17,6 +17,7 @@ from simulation.application.simulation_service import SimulationService  # noqa:
 from simulation.operation.engine_state import EngineOperatingState  # noqa: E402
 from simulation.scenarios.actions import AddMarkerAction  # noqa: E402
 from simulation.scenarios.definitions import Scenario  # noqa: E402
+from simulation.scenarios.library import list_all_scenarios  # noqa: E402
 from simulation.scenarios.triggers import AtTimeTrigger  # noqa: E402
 from simulation.sensors.fault_injection import (  # noqa: E402
     BiasSensorFault,
@@ -113,7 +114,7 @@ def test_dashboard_uses_grouped_dark_theme_and_live_status_indicators() -> None:
     )
     assert "150k" in speed_tick_labels
     assert "150000" not in speed_tick_labels
-    assert len(dashboard._scenario_dropdown_labels) == 16
+    assert len(dashboard._scenario_dropdown_labels) == len(list_all_scenarios())
     assert dashboard._scenario_dropdown_labels[0].startswith("SCN-NORMAL-001")
     assert dashboard._scenario_dropdown_button.active is False
 

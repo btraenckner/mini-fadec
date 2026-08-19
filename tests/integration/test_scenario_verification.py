@@ -9,7 +9,11 @@ import pytest
 
 from simulation.application.interactive_simulation import run_scripted_smoke_test
 from simulation.scenarios.definitions import Scenario
-from simulation.scenarios.library import get_scenario, list_scenarios
+from simulation.scenarios.library import (
+    get_scenario,
+    list_environment_scenarios,
+    list_scenarios,
+)
 from simulation.scenarios.runner import ScenarioRunner
 from simulation.scenarios.serialization import normalize_deterministic_result
 from simulation.telemetry.events import EventType
@@ -57,6 +61,13 @@ def test_complete_regression_scenario_library_passes(scenario_results: dict) -> 
         "nominal_multirate_lifecycle",
         "nominal_multirate_throttle_transient",
         "nominal_multirate_rpm_dropout",
+        "fault_reset_interlock",
+        "hot_start_protection",
+        "hung_start_timeout",
+        "throttle_speed_schedule",
+        "egt_limiter_arbitration",
+        "rpm_sensor_fault_matrix",
+        "egt_sensor_fault_matrix",
     }
     assert all(
         result.overall_status is ScenarioOverallStatus.PASS
@@ -234,6 +245,38 @@ def test_all_scenario_final_fuel_commands_remain_bounded(
         assert all(
             0.0 <= float(row["allowed_fuel_command"]) <= 1.0
             for row in _read_csv(result.telemetry_path)
+        )
+
+
+def test_ambient_challenge_scenarios_propagate_controlled_inputs(
+    tmp_path: Path,
+) -> None:
+    expected_points = {
+        "SCN-ENV-001": (-20.0, 80_000.0),
+        "SCN-ENV-002": (15.0, 101_325.0),
+        "SCN-ENV-003": (40.0, 105_000.0),
+    }
+
+    for scenario in list_environment_scenarios():
+        result = ScenarioRunner().run_scenario(
+            _isolated_scenario(scenario, tmp_path / scenario.name)
+        )
+        rows = _read_csv(result.telemetry_path)
+        expected_temperature, expected_pressure = expected_points[
+            scenario.scenario_id
+        ]
+
+        assert result.overall_status is ScenarioOverallStatus.PASS
+        assert {
+            float(row["ambient_temperature_c"]) for row in rows
+        } == {expected_temperature}
+        assert {
+            float(row["ambient_pressure_pa"]) for row in rows
+        } == {expected_pressure}
+        assert any(
+            item.requirement_id.endswith("-AMBIENT")
+            and item.status.value == "PASS"
+            for item in result.requirement_results
         )
 
 

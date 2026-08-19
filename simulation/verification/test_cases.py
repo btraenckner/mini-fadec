@@ -395,7 +395,6 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
     baseline = fadec_control_requirements_baseline()
     executable = TestCaseImplementationStatus.EXECUTABLE_SCENARIO
     partial = TestCaseImplementationStatus.PARTIAL_AUTOMATION
-    planned = TestCaseImplementationStatus.PLANNED
     test_cases = (
         _test_case(
             baseline,
@@ -457,7 +456,7 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
             "Fault reset interlock",
             "Verify that reset cannot clear FAULT while the rotor is turning.",
             ("FADEC-OPS-004",),
-            partial,
+            executable,
             (
                 "The isolated state machine is reset.",
                 "A fault request can be applied at controlled rotor speeds.",
@@ -468,10 +467,11 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
                 "Reduce validated speed below the threshold and request reset.",
                 "Confirm the state transitions to OFF.",
             ),
-            1.0,
+            30.0,
             "Both reset cases have been evaluated.",
             ("operating_state", "validated_rotor_speed_rpm", "reset_requested"),
             verification_level=VerificationLevel.SOFTWARE_IN_THE_LOOP,
+            scenario_ids=("SCN-OPS-003",),
             automated_test_references=(
                 "tests/unit/test_engine_state_machine.py::"
                 "test_fault_reset_is_rejected_while_rotor_is_turning",
@@ -485,7 +485,7 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
             "Hot-start protection",
             "Verify immediate safe fuel termination at the start EGT limit.",
             ("FADEC-START-001",),
-            planned,
+            executable,
             (
                 "A controllable EGT fault stimulus is available during IGNITION.",
                 "The selected profile defines a transient EGT limit.",
@@ -495,7 +495,7 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
                 "Drive validated EGT to the transient limit.",
                 "Measure protection-task activation, fuel cutoff, and final state.",
             ),
-            15.0,
+            8.0,
             "Fuel cutoff is observed or the start-protection timeout expires.",
             (
                 "simulation_time_s",
@@ -505,6 +505,7 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
                 "allowed_fuel_command",
                 "critical_protection_fault_request",
             ),
+            scenario_ids=("SCN-START-001",),
         ),
         _test_case(
             baseline,
@@ -512,7 +513,7 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
             "Hung-start timeout",
             "Verify safe termination when a start cannot reach IDLE.",
             ("FADEC-START-002",),
-            planned,
+            executable,
             (
                 "A repeatable plant or sensor stimulus can prevent start completion.",
                 "The start timeout is configured to 10.0 s.",
@@ -531,6 +532,7 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
                 "exhaust_temperature_c",
                 "allowed_fuel_command",
             ),
+            scenario_ids=("SCN-START-002",),
         ),
         _test_case(
             baseline,
@@ -538,7 +540,7 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
             "Throttle-to-speed schedule",
             "Verify clamping and linear scheduling at and beyond both boundaries.",
             ("FADEC-SPD-001",),
-            partial,
+            executable,
             (
                 "A valid profile-specific idle and maximum speed are configured.",
                 "The scheduler is reset and used without controller integration.",
@@ -548,10 +550,11 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
                 "Compare each result with the analytical linear schedule.",
                 "Repeat for every controlled engine profile.",
             ),
-            1.0,
+            16.0,
             "Every defined throttle input has been evaluated.",
             ("throttle_command", "speed_setpoint_rpm"),
-            verification_level=VerificationLevel.UNIT,
+            verification_level=VerificationLevel.SOFTWARE_IN_THE_LOOP,
+            scenario_ids=("SCN-SPD-001",),
             automated_test_references=(
                 "tests/unit/test_speed_controller.py::"
                 "test_scheduler_maps_clamped_throttle_to_speed",
@@ -661,7 +664,7 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
             "EGT fuel-limiter characteristic",
             "Verify monotonic fuel restriction through the configured EGT region.",
             ("FADEC-EGT-001",),
-            partial,
+            executable,
             (
                 "The profile-specific intervention and maximum EGT are configured.",
                 "Requested fuel is held constant during the temperature sweep.",
@@ -671,7 +674,7 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
                 "Sweep validated EGT through intervention and maximum temperatures.",
                 "Record the resulting EGT upper fuel limit at every point.",
             ),
-            10.0,
+            16.0,
             "The complete configured EGT sweep has been evaluated.",
             (
                 "validated_exhaust_temperature_c",
@@ -679,7 +682,7 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
                 "egt_fuel_limit",
                 "allowed_fuel_command",
             ),
-            initial_state=EngineOperatingState.RUNNING,
+            scenario_ids=("SCN-PROT-003",),
             automated_test_references=(
                 "tests/unit/test_exhaust_temperature_limiter.py::"
                 "test_limiter_progressively_reduces_fuel_in_intervention_region",
@@ -695,7 +698,7 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
             "System transient EGT limit",
             "Verify true peak EGT against the selected engine operating envelope.",
             ("FADEC-EGT-002",),
-            planned,
+            executable,
             (
                 "The selected EngineDefinition has an evidence-backed transient limit.",
                 "Normal and worst-case transient stimuli are formally defined.",
@@ -712,6 +715,11 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
                 "exhaust_temperature_c",
                 "egt_maximum_temperature_c",
                 "active_protection_limiter",
+            ),
+            scenario_ids=(
+                "SCN-NORMAL-001",
+                "SCN-TRANSIENT-001",
+                "SCN-TRANSIENT-002",
             ),
         ),
         _test_case(
@@ -826,7 +834,7 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
             "Protection arbitration",
             "Verify the most restrictive valid limit and absolute cutoff priority.",
             ("FADEC-PROT-001",),
-            partial,
+            executable,
             (
                 "Candidate upper and lower limits can be independently controlled.",
                 "Manager state is reset before each arbitration combination.",
@@ -837,7 +845,7 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
                 "Activate hard cutoff with competing nonzero limits.",
                 "Compare final fuel and diagnostics with analytical arbitration.",
             ),
-            2.0,
+            38.0,
             "Every defined arbitration combination has been evaluated.",
             (
                 "requested_fuel_command",
@@ -846,8 +854,8 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
                 "protection_hard_cutoff_active",
                 "protection_arbitration_conflict",
             ),
-            verification_level=VerificationLevel.UNIT,
-            initial_state=EngineOperatingState.RUNNING,
+            verification_level=VerificationLevel.SOFTWARE_IN_THE_LOOP,
+            scenario_ids=("SCN-PROT-003", "SCN-PROT-002"),
             automated_test_references=(
                 "tests/unit/test_protection_manager.py::"
                 "test_smallest_active_upper_fuel_limit_is_selected",
@@ -943,7 +951,7 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
             "Sensor fault and recovery matrix",
             "Verify every supported fault class and deterministic recovery by channel.",
             ("FADEC-SENS-004",),
-            partial,
+            executable,
             (
                 "Both channels start VALID at a stable operating condition.",
                 "Fault magnitude and duration are defined for each matrix cell.",
@@ -954,7 +962,7 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
                 "Repeat the complete matrix for EGT.",
                 "Confirm bounded fuel and deterministic results for the fixed seed.",
             ),
-            60.0,
+            25.0,
             "Every fault/channel/recovery matrix cell has been evaluated.",
             (
                 "rotor_speed_fault_type",
@@ -963,6 +971,7 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
                 "exhaust_temperature_health",
                 "allowed_fuel_command",
             ),
+            scenario_ids=("SCN-SENS-004", "SCN-SENS-005"),
             automated_test_references=(
                 "tests/unit/test_sensor_fault_injection.py::"
                 "test_bias_fault_adds_configured_offset",
@@ -1045,21 +1054,21 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
             baseline,
             "TC-ENV-001",
             "Ambient operating-envelope campaign",
-            "Verify all critical requirements at every approved ambient corner.",
+            "Establish controlled SIL evidence before physical ambient modelling.",
             ("FADEC-ENV-001",),
-            planned,
+            partial,
             (
-                "Profile-specific approved temperature and pressure bounds exist.",
+                "Project-selected SIL challenge points are explicitly identified.",
                 "The plant backend supports controlled ambient initialization.",
-                "The applicable critical regression campaign is selected.",
+                "Physical ambient sensitivity is not claimed by this campaign.",
             ),
             (
-                "Resolve low, nominal, and high profile ambient corners.",
-                "Execute the critical campaign at every resolved corner.",
-                "Aggregate critical outcomes without treating unsupported regions as PASS.",
+                "Execute the lifecycle at low, nominal, and high SIL points.",
+                "Verify the ambient inputs recorded in every snapshot.",
+                "Require finite plant outputs and bounded final fuel commands.",
             ),
             300.0,
-            "Every applicable critical scenario has run at every ambient corner.",
+            "Every defined SIL ambient challenge completes with controlled inputs.",
             (
                 "ambient_temperature_c",
                 "ambient_pressure_pa",
@@ -1067,9 +1076,18 @@ def fadec_test_case_catalog() -> TestCaseCatalog:
                 "overall_verification_result",
             ),
             environments=(
-                TestEnvironment("profile low corner", None, None, 0),
+                TestEnvironment("SIL low challenge", -20.0, 80_000.0, 0),
                 _NOMINAL_ENVIRONMENT,
-                TestEnvironment("profile high corner", None, None, 0),
+                TestEnvironment("SIL high challenge", 40.0, 105_000.0, 0),
+            ),
+            scenario_ids=("SCN-ENV-001", "SCN-ENV-002", "SCN-ENV-003"),
+            automated_test_references=(
+                "tests/integration/test_scenario_verification.py::"
+                "test_ambient_challenge_scenarios_propagate_controlled_inputs",
+            ),
+            additional_acceptance=(
+                "These SIL results do not establish physical ambient-envelope "
+                "compliance until an ambient-sensitive validated plant is used.",
             ),
         ),
     )

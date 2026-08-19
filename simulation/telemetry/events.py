@@ -53,9 +53,12 @@ class EventType(Enum):
     RESET_REJECTED = "RESET_REJECTED"
     ENGINE_STATE_CHANGED = "ENGINE_STATE_CHANGED"
     LIGHT_OFF_DETECTED = "LIGHT_OFF_DETECTED"
+    START_TIMEOUT_ACTIVATED = "START_TIMEOUT_ACTIVATED"
     SENSOR_FAULT_INJECTED = "SENSOR_FAULT_INJECTED"
     SENSOR_FAULT_CLEARED = "SENSOR_FAULT_CLEARED"
     SENSOR_HEALTH_CHANGED = "SENSOR_HEALTH_CHANGED"
+    FUEL_DELIVERY_FAULT_INJECTED = "FUEL_DELIVERY_FAULT_INJECTED"
+    FUEL_DELIVERY_FAULT_CLEARED = "FUEL_DELIVERY_FAULT_CLEARED"
     ACTIVE_LIMITER_CHANGED = "ACTIVE_LIMITER_CHANGED"
     LIMITER_ACTIVATED = "LIMITER_ACTIVATED"
     LIMITER_RELEASED = "LIMITER_RELEASED"
@@ -235,6 +238,7 @@ class SimulationEventMonitor:
         self._egt_limiter_reported = initial_snapshot.egt_limiter_active
         self._conflict_reported = initial_snapshot.protection_arbitration_conflict
         self._conflict_clear_since_s: float | None = None
+        self._reset_request_pending = False
 
     def observe(self, snapshot: SimulationSnapshot) -> None:
         """Emit events caused by one new canonical snapshot."""
@@ -271,6 +275,19 @@ class SimulationEventMonitor:
                 EventSeverity.INFO,
                 "engine_state_machine",
                 "Light-off and self-sustaining idle detected",
+            )
+        if (
+            snapshot.start_timeout_triggered
+            and not self._previous.start_timeout_triggered
+        ):
+            self.event_log.emit(
+                snapshot.simulation_time_s,
+                EventCategory.START_SEQUENCE,
+                EventType.START_TIMEOUT_ACTIVATED,
+                EventSeverity.CRITICAL,
+                "engine_state_machine",
+                "Hung-start timeout activated",
+                diagnostic_code="HUNG_START_TIMEOUT",
             )
         if (
             current_state is EngineOperatingState.FAULT
@@ -505,7 +522,12 @@ class SimulationEventMonitor:
             self._conflict_clear_since_s = None
 
     def _reset_events(self, snapshot: SimulationSnapshot) -> None:
-        if not snapshot.reset_requested:
+        self._reset_request_pending |= snapshot.reset_requested
+        if (
+            not self._reset_request_pending
+            or "state_machine"
+            not in snapshot.scheduler_tasks_executed_current_tick
+        ):
             return
         accepted = (
             self._previous.operating_state is EngineOperatingState.FAULT
@@ -521,3 +543,4 @@ class SimulationEventMonitor:
             old_value=self._previous.operating_state.value,
             new_value=snapshot.operating_state.value,
         )
+        self._reset_request_pending = False

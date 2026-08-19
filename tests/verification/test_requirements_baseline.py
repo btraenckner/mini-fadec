@@ -32,7 +32,7 @@ def test_baseline_is_draft_unique_and_json_serializable() -> None:
     }
 
 
-def test_baseline_coverage_summary_keeps_planned_gaps_visible() -> None:
+def test_baseline_has_executable_trace_for_every_requirement() -> None:
     baseline = fadec_control_requirements_baseline()
     implemented = tuple(
         requirement
@@ -45,19 +45,8 @@ def test_baseline_coverage_summary_keeps_planned_gaps_visible() -> None:
         if requirement.coverage is TraceabilityCoverage.PLANNED
     )
 
-    assert len(implemented) == 17
-    assert len(planned) == 9
-    assert {requirement.requirement_id for requirement in planned} == {
-        "FADEC-OPS-004",
-        "FADEC-START-001",
-        "FADEC-START-002",
-        "FADEC-SPD-001",
-        "FADEC-EGT-001",
-        "FADEC-EGT-002",
-        "FADEC-PROT-001",
-        "FADEC-SENS-004",
-        "FADEC-ENV-001",
-    }
+    assert len(implemented) == 26
+    assert planned == ()
 
 
 def test_every_executable_trace_resolves_to_existing_scenario_evidence() -> None:
@@ -102,8 +91,8 @@ def test_traceability_document_contains_every_requirement_and_summary() -> None:
 
     for requirement in fadec_control_requirements_baseline().requirements:
         assert f"| `{requirement.requirement_id}` |" in matrix
-    assert "| Implemented trace | 17 |" in matrix
-    assert "| Planned gap | 9 |" in matrix
+    assert "| Implemented trace | 26 |" in matrix
+    assert "| Planned gap | 0 |" in matrix
 
 
 def test_unknown_requirement_lookup_and_duplicate_baseline_are_rejected() -> None:

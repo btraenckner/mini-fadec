@@ -233,6 +233,34 @@ class SimulationService:
 
         self.coordinator.clear_sensor_faults()
 
+    def set_fuel_delivery_fault(self, active: bool) -> None:
+        """Inject or clear a simulation-only loss of delivered plant fuel."""
+
+        requested_state = bool(active)
+        previous_state = self.coordinator.fuel_delivery_fault_active
+        if requested_state == previous_state:
+            return
+        self.coordinator.set_fuel_delivery_fault(requested_state)
+        self.coordinator.event_log.emit(
+            self.current_simulation_time_s,
+            EventCategory.ACTUATOR,
+            (
+                EventType.FUEL_DELIVERY_FAULT_INJECTED
+                if requested_state
+                else EventType.FUEL_DELIVERY_FAULT_CLEARED
+            ),
+            EventSeverity.WARNING if requested_state else EventSeverity.INFO,
+            "fuel_delivery_fault",
+            (
+                "Injected complete loss of physical fuel delivery"
+                if requested_state
+                else "Cleared physical fuel-delivery fault"
+            ),
+            old_value=previous_state,
+            new_value=requested_state,
+            diagnostic_code="FUEL_DELIVERY_LOSS",
+        )
+
     def describe_sensor_fault(self, channel: SensorChannel) -> str:
         """Return the stable public description of one injected fault."""
 
@@ -757,6 +785,14 @@ class SimulationService:
                 else self.fadec_calibration.calibration_version,
             ),
             ("plant_model_id", self.coordinator.engine_model.model_id),
+            (
+                "ambient_temperature_c",
+                self.coordinator.ambient_conditions.temperature_c,
+            ),
+            (
+                "ambient_pressure_pa",
+                self.coordinator.ambient_conditions.pressure_pa,
+            ),
             (
                 "engine_idle_speed_rpm",
                 plant_configuration.get("idle_speed_rpm"),

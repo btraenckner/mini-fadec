@@ -66,6 +66,21 @@ def test_service_controls_faults_without_exposing_low_level_mutation() -> None:
     assert service.describe_sensor_fault(SensorChannel.ROTOR_SPEED) == "none"
 
 
+def test_service_controls_simulation_only_fuel_delivery_loss() -> None:
+    service = _service()
+
+    service.set_fuel_delivery_fault(True)
+    assert service.coordinator.fuel_delivery_fault_active
+    service.set_fuel_delivery_fault(False)
+
+    assert not service.coordinator.fuel_delivery_fault_active
+    event_types = [
+        event.event_type for event in service.get_recent_events()
+    ]
+    assert EventType.FUEL_DELIVERY_FAULT_INJECTED in event_types
+    assert EventType.FUEL_DELIVERY_FAULT_CLEARED in event_types
+
+
 def test_service_recording_lifecycle_and_marker_are_public(tmp_path: Path) -> None:
     service = _service(tmp_path)
 

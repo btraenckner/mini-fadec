@@ -4,7 +4,10 @@ from dataclasses import dataclass
 from typing import Mapping, Protocol
 
 from simulation.operation.engine_state import EngineOperatingState
-from simulation.protection.types import ProtectionLimiter
+from simulation.protection.types import (
+    ProtectionDiagnosticReason,
+    ProtectionLimiter,
+)
 from simulation.sensors.fault_injection import SensorChannel
 from simulation.telemetry.events import EventType, SimulationEvent
 from simulation.telemetry.snapshot import SimulationSnapshot
@@ -120,6 +123,16 @@ class ValidatedEgtBelowCondition:
 
 
 @dataclass(frozen=True)
+class ValidatedEgtAtMaximumCondition:
+    """Match validated EGT at or above the active calibrated maximum."""
+
+    def evaluate(self, context: ConditionContext) -> bool:
+        snapshot = context.latest_snapshot
+        value = snapshot.validated_exhaust_temperature_c
+        return value is not None and value >= snapshot.egt_maximum_temperature_c
+
+
+@dataclass(frozen=True)
 class ThrottleDemandAtLeastCondition:
     """Match normalized throttle demand at or above an inclusive threshold."""
 
@@ -143,6 +156,32 @@ class ActiveLimiterEqualsCondition:
         return (
             context.latest_snapshot.active_protection_limiter
             is self.target_limiter
+        )
+
+
+@dataclass(frozen=True)
+class ConstrainingLimiterCondition:
+    """Match when one limiter is among the current fuel constraints."""
+
+    target_limiter: ProtectionLimiter
+
+    def evaluate(self, context: ConditionContext) -> bool:
+        return (
+            self.target_limiter
+            in context.latest_snapshot.constraining_protection_limiters
+        )
+
+
+@dataclass(frozen=True)
+class ProtectionReasonActiveCondition:
+    """Match when one protection function reports its active diagnostic."""
+
+    target_reason: ProtectionDiagnosticReason
+
+    def evaluate(self, context: ConditionContext) -> bool:
+        return (
+            self.target_reason
+            in context.latest_snapshot.protection_diagnostic_reasons
         )
 
 

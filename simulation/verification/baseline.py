@@ -270,6 +270,10 @@ def fadec_control_requirements_baseline() -> RequirementBaseline:
                 "reset at or below the threshold transitions to OFF.",
                 "EngineStateMachine safety interlock",
                 "TC-OPS-003",
+                scenario_ids=("SCN-OPS-003",),
+                executable_requirement_ids=(
+                    "REQ-OPS-RESET-INTERLOCK",
+                ),
             ),
             _requirement(
                 "FADEC-START-001",
@@ -284,6 +288,10 @@ def fadec_control_requirements_baseline() -> RequirementBaseline:
                 "validated EGT reaches the transient limit during IGNITION.",
                 "EngineDefinition transient EGT limit",
                 "TC-START-001",
+                scenario_ids=("SCN-START-001",),
+                executable_requirement_ids=(
+                    "REQ-START-HOT-FUEL-CUTOFF",
+                ),
             ),
             _requirement(
                 "FADEC-START-002",
@@ -298,6 +306,10 @@ def fadec_control_requirements_baseline() -> RequirementBaseline:
                 "10.0 s after start when IDLE has not been reached.",
                 "Current Mini-FADEC development target",
                 "TC-START-002",
+                scenario_ids=("SCN-START-002",),
+                executable_requirement_ids=(
+                    "REQ-START-HUNG-TIMEOUT",
+                ),
             ),
             _requirement(
                 "FADEC-SPD-001",
@@ -314,6 +326,10 @@ def fadec_control_requirements_baseline() -> RequirementBaseline:
                 "EngineDefinition operating envelope",
                 "TC-SPD-001",
                 verification_method=VerificationMethod.TEST_AND_ANALYSIS,
+                scenario_ids=("SCN-SPD-001",),
+                executable_requirement_ids=(
+                    "REQ-SPD-THROTTLE-SCHEDULE",
+                ),
             ),
             _requirement(
                 "FADEC-SPD-002",
@@ -423,6 +439,10 @@ def fadec_control_requirements_baseline() -> RequirementBaseline:
                 "approaches the maximum limit.",
                 "FadecCalibration EGT protection",
                 "TC-EGT-001",
+                scenario_ids=("SCN-PROT-003",),
+                executable_requirement_ids=(
+                    "REQ-EGT-LIMITER-CHARACTERISTIC",
+                ),
             ),
             _requirement(
                 "FADEC-EGT-002",
@@ -437,6 +457,16 @@ def fadec_control_requirements_baseline() -> RequirementBaseline:
                 "EngineDefinition transient EGT limit.",
                 "EngineDefinition operating envelope",
                 "TC-EGT-002",
+                scenario_ids=(
+                    "SCN-NORMAL-001",
+                    "SCN-TRANSIENT-001",
+                    "SCN-TRANSIENT-002",
+                ),
+                executable_requirement_ids=(
+                    "REQ-NORMAL-TRUE-EGT-LIMIT",
+                    "REQ-TRANSIENT-TRUE-EGT-LIMIT",
+                    "REQ-DECEL-TRUE-EGT-LIMIT",
+                ),
             ),
             _requirement(
                 "FADEC-ACC-001",
@@ -535,6 +565,11 @@ def fadec_control_requirements_baseline() -> RequirementBaseline:
                 "Central fuel-protection architecture",
                 "TC-PROT-001",
                 verification_method=VerificationMethod.TEST_AND_ANALYSIS,
+                scenario_ids=("SCN-PROT-003", "SCN-PROT-002"),
+                executable_requirement_ids=(
+                    "REQ-PROT-ARBITRATION-CONCURRENT",
+                    "REQ-HARD-ARBITRATION-CUTOFF",
+                ),
             ),
             _requirement(
                 "FADEC-SENS-001",
@@ -612,6 +647,11 @@ def fadec_control_requirements_baseline() -> RequirementBaseline:
                 "configuration.",
                 "Supported sensor fault-injection model",
                 "TC-SENS-004",
+                scenario_ids=("SCN-SENS-004", "SCN-SENS-005"),
+                executable_requirement_ids=(
+                    "REQ-RPM-FAULT-MATRIX",
+                    "REQ-EGT-FAULT-MATRIX",
+                ),
             ),
             _requirement(
                 "FADEC-SCH-001",
@@ -685,6 +725,16 @@ def fadec_control_requirements_baseline() -> RequirementBaseline:
                 "than treated as passing.",
                 "EngineDefinition applicability and ambient interface",
                 "TC-ENV-001",
+                scenario_ids=(
+                    "SCN-ENV-001",
+                    "SCN-ENV-002",
+                    "SCN-ENV-003",
+                ),
+                executable_requirement_ids=(
+                    "REQ-ENV-001-AMBIENT",
+                    "REQ-ENV-002-AMBIENT",
+                    "REQ-ENV-003-AMBIENT",
+                ),
             ),
         ),
     )

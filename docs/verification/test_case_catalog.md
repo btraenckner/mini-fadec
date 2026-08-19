@@ -64,26 +64,29 @@ gap.
 ### TC-OPS-003 — Fault reset interlock
 
 - Requirement: `FADEC-OPS-004`
-- Level/status: `SIL` / `PARTIAL_AUTOMATION`
-- Current automation: State-machine reset rejection and acceptance unit tests.
+- Level/status: `SIL` / `EXECUTABLE_SCENARIO`
+- Scenario: `SCN-OPS-003`
 - Procedure: Request reset in `FAULT` above the stopped-speed threshold, then
   repeat below the threshold.
-- Evidence gap: An integrated scenario and report artifact are still required.
+- Evidence: Reset action times, accepted/rejected events, state, and validated
+  rotor speed.
 
 ### TC-START-001 — Hot-start protection
 
 - Requirement: `FADEC-START-001`
-- Level/status: `SIL` / `PLANNED`
+- Level/status: `SIL` / `EXECUTABLE_SCENARIO`
+- Scenario: `SCN-START-001`
 - Procedure: Enter `IGNITION`, drive validated EGT to the profile transient
   limit, and measure protection-task activation and fuel cutoff.
 - Evidence: Validated EGT, configured limit, final fuel, state, and fault
   request.
-- Duration/termination: 15 s maximum; stop after safe cutoff or timeout.
+- Duration/termination: 8 s maximum; stop after safe cutoff or timeout.
 
 ### TC-START-002 — Hung-start timeout
 
 - Requirement: `FADEC-START-002`
-- Level/status: `SIL` / `PLANNED`
+- Level/status: `SIL` / `EXECUTABLE_SCENARIO`
+- Scenario: `SCN-START-002`
 - Procedure: Apply a controlled stimulus that prevents `IDLE`, request start,
   and retain the stimulus through the 10 s start timeout.
 - Evidence: State timing, speed, EGT, and final fuel.
@@ -94,11 +97,12 @@ gap.
 ### TC-SPD-001 — Throttle-to-speed schedule
 
 - Requirement: `FADEC-SPD-001`
-- Level/status: `UNIT` / `PARTIAL_AUTOMATION`
+- Level/status: `SIL` / `EXECUTABLE_SCENARIO`
+- Scenario: `SCN-SPD-001`
 - Procedure: Evaluate throttle below, at, between, and above 0.0 and 1.0 for
   every controlled profile; compare with the analytical linear schedule.
-- Current automation: Scheduler clamping and interpolation unit test.
-- Evidence gap: Profile-parameterized formal result aggregation is required.
+- Evidence: Requested and clamped throttle, scheduled speed, endpoint values,
+  and maximum schedule error.
 
 ### TC-SPD-002 — Closed-loop throttle transient
 
@@ -141,16 +145,19 @@ gap.
 ### TC-EGT-001 — EGT fuel-limiter characteristic
 
 - Requirement: `FADEC-EGT-001`
-- Level/status: `SIL` / `PARTIAL_AUTOMATION`
+- Level/status: `SIL` / `EXECUTABLE_SCENARIO`
+- Scenario: `SCN-PROT-003`
 - Procedure: Hold requested fuel constant and sweep validated EGT from below
   intervention through the maximum temperature.
-- Current automation: Isolated EGT-limiter monotonicity and bound tests.
-- Evidence gap: Integrated sensor-to-final-actuator scenario evidence.
+- Evidence: Validated EGT, requested fuel, EGT upper limit, final fuel, and
+  concurrent limiter diagnostics.
 
 ### TC-EGT-002 — System transient EGT limit
 
 - Requirement: `FADEC-EGT-002`
-- Level/status: `SIL` / `PLANNED`
+- Level/status: `SIL` / `EXECUTABLE_SCENARIO`
+- Scenarios: `SCN-NORMAL-001`, `SCN-TRANSIENT-001`,
+  `SCN-TRANSIENT-002`
 - Procedure: Execute defined start, acceleration, deceleration, and shutdown
   transients and capture true EGT at plant integration rate.
 - Evidence: Aggregate true EGT peak and profile transient EGT limit.
@@ -191,13 +198,12 @@ gap.
 ### TC-PROT-001 — Protection arbitration
 
 - Requirement: `FADEC-PROT-001`
-- Level/status: `UNIT` / `PARTIAL_AUTOMATION`
+- Level/status: `SIL` / `EXECUTABLE_SCENARIO`
+- Scenarios: `SCN-PROT-003`, `SCN-PROT-002`
 - Procedure: Evaluate individual and concurrent upper limits, lower-bound
   conflicts, equal limits, and hard cutoff with competing nonzero limits.
-- Current automation: Restrictive-upper-limit, safety-conflict, and hard-cutoff
-  manager unit tests.
-- Evidence gap: Complete controlled input-combination coverage and evidence
-  artifact.
+- Evidence: Reconstructed candidate limits, concurrent EGT/acceleration
+  activity, final fuel, and hard-cutoff priority.
 
 ## Sensor and scheduler test cases
 
@@ -228,13 +234,13 @@ gap.
 ### TC-SENS-004 — Sensor fault and recovery matrix
 
 - Requirement: `FADEC-SENS-004`
-- Level/status: `SIL` / `PARTIAL_AUTOMATION`
+- Level/status: `SIL` / `EXECUTABLE_SCENARIO`
+- Scenarios: `SCN-SENS-004`, `SCN-SENS-005`
 - Procedure: Apply bias, drift, stuck, dropout, forced-value, and excessive
   noise faults independently to RPM and EGT; clear every fault and measure
   validation recovery.
-- Current automation: Fault-injector behavior, independence, deterministic
-  noise, and clear-fault unit tests.
-- Evidence gap: Complete integrated fault/channel/recovery matrix.
+- Evidence: Injected and cleared fault events, fault type, channel health,
+  recovery, and bounded final fuel.
 
 ### TC-SCH-001 — Scheduler release integrity
 
@@ -257,14 +263,16 @@ gap.
 ### TC-ENV-001 — Ambient operating-envelope campaign
 
 - Requirement: `FADEC-ENV-001`
-- Level/status: `SIL` / `PLANNED`
-- Procedure: Resolve profile-specific low, nominal, and high ambient corners;
-  execute all applicable critical scenarios at every corner.
-- Evidence: Ambient conditions, controlled profile/backend, and aggregate
-  critical requirement status.
-- Open prerequisite: The approved ambient domain is not yet represented by
-  every `EngineDefinition`; unresolved corners are deliberately stored as
-  unresolved rather than populated with invented limits.
+- Level/status: `SIL` / `PARTIAL_AUTOMATION`
+- Scenarios: `SCN-ENV-001`, `SCN-ENV-002`, `SCN-ENV-003`
+- Procedure: Execute the normal lifecycle at project-selected low, nominal,
+  and high SIL challenge points and verify recorded ambient inputs plus finite,
+  bounded behavior.
+- Evidence: Ambient conditions, controlled profile/backend, plant outputs,
+  final fuel, and scenario result.
+- Open prerequisite: The reference plant does not model physical ambient
+  sensitivity. These passing SIL interface checks therefore do not establish
+  physical operating-envelope compliance.
 
 ## Result interpretation
 
@@ -281,7 +289,7 @@ gap.
 
 | Implementation status | Test cases |
 |---|---:|
-| `EXECUTABLE_SCENARIO` | 15 |
-| `PARTIAL_AUTOMATION` | 5 |
-| `PLANNED` | 4 |
+| `EXECUTABLE_SCENARIO` | 23 |
+| `PARTIAL_AUTOMATION` | 1 |
+| `PLANNED` | 0 |
 | Total | 24 |

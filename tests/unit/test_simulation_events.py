@@ -113,6 +113,61 @@ def test_fault_events_and_user_marker_are_recorded_by_public_services() -> None:
     assert marker.message == "before throttle step"
 
 
+def test_reset_result_waits_for_state_machine_processing() -> None:
+    initial = replace(
+        EngineSimulationCoordinator().snapshot,
+        operating_state=EngineOperatingState.FAULT,
+    )
+    event_log = SimulationEventLog()
+    monitor = SimulationEventMonitor(event_log, initial)
+
+    monitor.observe(
+        replace(
+            initial,
+            simulation_time_s=0.01,
+            reset_requested=True,
+            scheduler_tasks_executed_current_tick=("snapshot",),
+        )
+    )
+    assert not {
+        EventType.RESET_ACCEPTED,
+        EventType.RESET_REJECTED,
+    }.intersection(event.event_type for event in event_log.events)
+
+    monitor.observe(
+        replace(
+            initial,
+            simulation_time_s=0.02,
+            reset_requested=False,
+            scheduler_tasks_executed_current_tick=("state_machine",),
+        )
+    )
+    assert EventType.RESET_REJECTED in {
+        event.event_type for event in event_log.events
+    }
+
+    monitor.observe(
+        replace(
+            initial,
+            simulation_time_s=0.03,
+            reset_requested=True,
+            scheduler_tasks_executed_current_tick=("snapshot",),
+        )
+    )
+    monitor.observe(
+        replace(
+            initial,
+            simulation_time_s=0.04,
+            reset_requested=False,
+            operating_state=EngineOperatingState.OFF,
+            scheduler_tasks_executed_current_tick=("state_machine",),
+        )
+    )
+    assert EventType.RESET_ACCEPTED in {
+        event.event_type for event in event_log.events
+    }
+
+
 def test_event_sequences_serialization_and_bounded_storage_are_stable() -> None:
     event_log = SimulationEventLog(maximum_events=2)
     for index in range(3):

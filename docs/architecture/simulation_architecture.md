@@ -141,6 +141,12 @@ an instance-owned seeded random generator, and drift uses accumulated
 simulation time. Clearing a fault resets its channel runtime state but does not
 reset validator recovery state.
 
+Formal hot- and hung-start scenarios also use a simulation-only physical
+fuel-delivery-loss stimulus. It acts only between the final FADEC actuator
+command and the plant, so telemetry retains both the commanded fuel and the
+fact that the plant received no fuel. It is not part of a public controller or
+plant interface and has typed injection and clear events.
+
 ## Signal Validation
 
 Channel health has three states:
@@ -182,6 +188,13 @@ A policy outside both validator and state machine maps health to FADEC action:
 Manual FAULT remains available. A reset request is passed to the state machine
 only after both sensor channels recover to `VALID`; the existing stopped-speed
 condition still applies.
+
+The state machine supervises cumulative time in `CRANKING` and `IGNITION`.
+When `IDLE` has not been reached within the calibrated 10-second start window,
+it enters `FAULT`, latches a hung-start diagnostic, and the state safety cutoff
+commands zero fuel. Reset results are reported only after a scheduled
+state-machine release has processed the request, avoiding premature events
+under multi-rate scheduling.
 
 ## Central Fuel Protection
 

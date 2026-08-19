@@ -79,6 +79,7 @@ reviewed when better engine data become available.
 - Criticality: `CRITICAL`
 - Source: Engine-state-machine safety interlock
 - Planned test: `TC-OPS-003`
+- Executable trace: `SCN-OPS-003` / `REQ-OPS-RESET-INTERLOCK`
 
 ## Start-protection requirements
 
@@ -91,6 +92,7 @@ reviewed when better engine data become available.
 - Criticality: `CRITICAL`
 - Source: `EngineDefinition` transient EGT limit
 - Planned test: `TC-START-001`
+- Executable trace: `SCN-START-001` / `REQ-START-HOT-FUEL-CUTOFF`
 
 ### FADEC-START-002 — Hung-start timeout
 
@@ -101,6 +103,7 @@ reviewed when better engine data become available.
 - Criticality: `CRITICAL`
 - Source: Current Mini-FADEC development target
 - Planned test: `TC-START-002`
+- Executable trace: `SCN-START-002` / `REQ-START-HUNG-TIMEOUT`
 
 ## Speed-control requirements
 
@@ -114,6 +117,7 @@ reviewed when better engine data become available.
 - Criticality: `MAJOR`
 - Source: `EngineDefinition` operating envelope
 - Planned test: `TC-SPD-001`
+- Executable trace: `SCN-SPD-001` / `REQ-SPD-THROTTLE-SCHEDULE`
 
 ### FADEC-SPD-002 — Speed settling
 
@@ -177,6 +181,7 @@ reviewed when better engine data become available.
 - Criticality: `CRITICAL`
 - Source: `FadecCalibration` EGT protection
 - Planned test: `TC-EGT-001`
+- Executable trace: `SCN-PROT-003` / `REQ-EGT-LIMITER-CHARACTERISTIC`
 
 ### FADEC-EGT-002 — Transient EGT limit
 
@@ -187,6 +192,8 @@ reviewed when better engine data become available.
 - Criticality: `CRITICAL`
 - Source: `EngineDefinition` operating envelope
 - Planned test: `TC-EGT-002`
+- Executable traces: `SCN-NORMAL-001`, `SCN-TRANSIENT-001`, and
+  `SCN-TRANSIENT-002`
 
 ### FADEC-ACC-001 — Rotor-acceleration limiting
 
@@ -240,6 +247,7 @@ reviewed when better engine data become available.
 - Criticality: `CRITICAL`
 - Source: Central fuel-protection architecture
 - Planned test: `TC-PROT-001`
+- Executable traces: `SCN-PROT-003` and `SCN-PROT-002`
 
 ## Sensor-feedback requirements
 
@@ -285,6 +293,7 @@ reviewed when better engine data become available.
 - Criticality: `MAJOR`
 - Source: Supported sensor fault-injection model
 - Planned test: `TC-SENS-004`
+- Executable traces: `SCN-SENS-004` and `SCN-SENS-005`
 
 ## Scheduler requirements
 
@@ -320,6 +329,12 @@ reviewed when better engine data become available.
 - Criticality: `CRITICAL`
 - Source: `EngineDefinition` applicability and ambient interface
 - Planned test: `TC-ENV-001`
+- Partial executable traces: `SCN-ENV-001`, `SCN-ENV-002`, and
+  `SCN-ENV-003`
+- Evidence limitation: These controlled SIL challenge points verify input
+  propagation and bounded finite behavior only. Physical operating-envelope
+  compliance remains open until an ambient-sensitive validated plant and
+  approved profile bounds are available.
 
 ## Approval and change control
 

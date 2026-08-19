@@ -51,9 +51,8 @@ def test_implementation_summary_keeps_incomplete_evidence_visible() -> None:
     )
 
     assert counts == {
-        ImplementationStatus.EXECUTABLE_SCENARIO: 15,
-        ImplementationStatus.PARTIAL_AUTOMATION: 5,
-        ImplementationStatus.PLANNED: 4,
+        ImplementationStatus.EXECUTABLE_SCENARIO: 23,
+        ImplementationStatus.PARTIAL_AUTOMATION: 1,
     }
 
 
@@ -97,7 +96,7 @@ def test_executable_scenario_links_agree_with_baseline_trace() -> None:
                 )
 
 
-def test_unresolved_ambient_limits_remain_a_planned_gap() -> None:
+def test_ambient_campaign_retains_explicit_physical_fidelity_gap() -> None:
     catalog = fadec_test_case_catalog()
     unresolved = tuple(
         case.test_case_id
@@ -105,10 +104,13 @@ def test_unresolved_ambient_limits_remain_a_planned_gap() -> None:
         if not all(environment.is_resolved for environment in case.environments)
     )
 
-    assert unresolved == ("TC-ENV-001",)
+    assert unresolved == ()
     assert (
         catalog.test_case("TC-ENV-001").implementation_status
-        is ImplementationStatus.PLANNED
+        is ImplementationStatus.PARTIAL_AUTOMATION
+    )
+    assert "do not establish physical" in " ".join(
+        catalog.test_case("TC-ENV-001").acceptance_criteria
     )
 
 
@@ -123,6 +125,7 @@ def test_scenario_trace_lookup_preserves_baseline_order() -> None:
         "TC-ACT-001",
         "TC-ACT-002",
         "TC-ACT-003",
+        "TC-EGT-002",
     )
     assert catalog.requirement_ids_for_scenario("SCN-NORMAL-001") == (
         "FADEC-OPS-001",
@@ -131,6 +134,7 @@ def test_scenario_trace_lookup_preserves_baseline_order() -> None:
         "FADEC-ACT-001",
         "FADEC-ACT-002",
         "FADEC-ACT-003",
+        "FADEC-EGT-002",
     )
 
 
@@ -158,9 +162,9 @@ def test_human_catalog_and_matrix_contain_controlled_test_cases() -> None:
             f"{test_case.implementation_status.value} |"
         )
         assert expected_trace in matrix
-    assert "| `EXECUTABLE_SCENARIO` | 15 |" in catalog_document
-    assert "| `PARTIAL_AUTOMATION` | 5 |" in catalog_document
-    assert "| `PLANNED` | 4 |" in catalog_document
+    assert "| `EXECUTABLE_SCENARIO` | 23 |" in catalog_document
+    assert "| `PARTIAL_AUTOMATION` | 1 |" in catalog_document
+    assert "| `PLANNED` | 0 |" in catalog_document
 
 
 def test_unknown_lookup_and_duplicate_catalog_entries_are_rejected() -> None:

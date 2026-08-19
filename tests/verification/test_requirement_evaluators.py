@@ -6,6 +6,7 @@ import pytest
 
 from simulation.application.engine_simulation import EngineSimulationCoordinator
 from simulation.operation.engine_state import EngineOperatingState
+from simulation.protection.types import ProtectionDiagnosticReason
 from simulation.scenarios.actions import (
     ActionExecutionStatus,
     ActionResult,
@@ -21,6 +22,7 @@ from simulation.validation.sensor_validation import ChannelHealth
 from simulation.verification.evaluators import (
     ActuatorInvariant,
     ActuatorInvariantRequirementEvaluator,
+    AmbientConditionRequirementEvaluator,
     EventNotObservedRequirementEvaluator,
     EventObservedRequirementEvaluator,
     FaultResponseTimeRequirementEvaluator,
@@ -28,6 +30,7 @@ from simulation.verification.evaluators import (
     NoTruthFallbackRequirementEvaluator,
     NumericSignal,
     OvershootRequirementEvaluator,
+    ProtectionArbitrationRequirementEvaluator,
     SensorHealthReachedRequirementEvaluator,
     SettlingTimeRequirementEvaluator,
     SignalBandRequirementEvaluator,
@@ -36,6 +39,8 @@ from simulation.verification.evaluators import (
     StateReachedRequirementEvaluator,
     StateReachedWithinRequirementEvaluator,
     StateSequenceRequirementEvaluator,
+    ThrottleScheduleRequirementEvaluator,
+    TrueEgtWithinConfiguredLimitRequirementEvaluator,
 )
 from simulation.verification.requirements import (
     EvaluationContext,
@@ -424,3 +429,97 @@ def test_sensor_health_and_no_truth_fallback_are_evaluated_explicitly() -> None:
 
     assert health.status is RequirementStatus.PASS
     assert fallback.status is RequirementStatus.PASS
+
+
+def test_true_egt_uses_the_configured_snapshot_limit() -> None:
+    evaluator = TrueEgtWithinConfiguredLimitRequirementEvaluator()
+    passing = _context(
+        (_snapshot(0.0, exhaust_temperature_c=679.0, egt_maximum_temperature_c=680.0),)
+    )
+    failing = _context(
+        (_snapshot(0.0, exhaust_temperature_c=681.0, egt_maximum_temperature_c=680.0),)
+    )
+
+    assert evaluator.evaluate(passing).status is RequirementStatus.PASS
+    failure = evaluator.evaluate(failing)
+    assert failure.status is RequirementStatus.FAIL
+    assert failure.diagnostic_code == "TRUE_EGT_LIMIT_EXCEEDED"
+
+
+def test_throttle_schedule_evaluator_checks_clamping_and_linearity() -> None:
+    points = (
+        ("below", -0.2),
+        ("zero", 0.0),
+        ("middle", 0.5),
+        ("maximum", 1.0),
+        ("above", 1.2),
+    )
+    actions = {
+        action_id: _action(action_id, float(index))
+        for index, (action_id, _) in enumerate(points)
+    }
+    snapshots = tuple(
+        _snapshot(
+            float(index) + 0.1,
+            EngineOperatingState.RUNNING,
+            speed_control_enabled=True,
+            throttle_demand=min(max(requested, 0.0), 1.0),
+            speed_setpoint_rpm=(
+                39_000.0
+                + min(max(requested, 0.0), 1.0) * 89_000.0
+            ),
+        )
+        for index, (_, requested) in enumerate(points)
+    )
+
+    outcome = ThrottleScheduleRequirementEvaluator(points).evaluate(
+        _context(snapshots, actions=actions)
+    )
+
+    assert outcome.status is RequirementStatus.PASS
+    assert outcome.evidence.measured_value == pytest.approx(0.0)
+
+
+def test_protection_arbitration_reconstructs_concurrent_and_cutoff_cases() -> None:
+    concurrent = _snapshot(
+        1.0,
+        EngineOperatingState.RUNNING,
+        requested_fuel_command=0.8,
+        egt_fuel_limit=0.6,
+        acceleration_fuel_limit=0.5,
+        state_maximum_fuel_command=1.0,
+        deceleration_minimum_fuel_command=0.0,
+        allowed_fuel_command=0.5,
+        protection_hard_cutoff_active=False,
+        protection_diagnostic_reasons=(
+            ProtectionDiagnosticReason.EGT_LIMITING,
+            ProtectionDiagnosticReason.ACCELERATION_LIMITING,
+        ),
+    )
+    cutoff = replace(
+        concurrent,
+        simulation_time_s=1.1,
+        allowed_fuel_command=0.0,
+        protection_hard_cutoff_active=True,
+    )
+    evaluator = ProtectionArbitrationRequirementEvaluator(
+        require_concurrent_limits=True,
+        require_hard_cutoff=True,
+    )
+
+    assert evaluator.evaluate(
+        _context((concurrent, cutoff))
+    ).status is RequirementStatus.PASS
+
+
+def test_ambient_evaluator_rejects_uncontrolled_snapshot_inputs() -> None:
+    evaluator = AmbientConditionRequirementEvaluator(-20.0, 80_000.0)
+    passing = _context(
+        (_snapshot(0.0, ambient_temperature_c=-20.0, ambient_pressure_pa=80_000.0),)
+    )
+    failing = _context(
+        (_snapshot(0.0, ambient_temperature_c=15.0, ambient_pressure_pa=101_325.0),)
+    )
+
+    assert evaluator.evaluate(passing).status is RequirementStatus.PASS
+    assert evaluator.evaluate(failing).status is RequirementStatus.FAIL

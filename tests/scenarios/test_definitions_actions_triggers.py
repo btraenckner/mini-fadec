@@ -7,6 +7,10 @@ import pytest
 
 from simulation.application.engine_simulation import EngineSimulationCoordinator
 from simulation.operation.engine_state import EngineOperatingState
+from simulation.protection.types import (
+    ProtectionDiagnosticReason,
+    ProtectionLimiter,
+)
 from simulation.scenarios.actions import (
     ActionExecutionStatus,
     ActionResult,
@@ -16,6 +20,7 @@ from simulation.scenarios.actions import (
     RequestManualFaultAction,
     RequestResetAction,
     RequestShutdownAction,
+    SetFuelDeliveryFaultAction,
     SetThrottleAction,
     StartEngineAction,
     StartRecordingAction,
@@ -24,10 +29,13 @@ from simulation.scenarios.actions import (
 from simulation.scenarios.conditions import (
     ActionExecutedCondition,
     ConditionContext,
+    ConstrainingLimiterCondition,
     ElapsedAfterActionCondition,
     EngineStateEqualsCondition,
     EventTypeObservedCondition,
+    ProtectionReasonActiveCondition,
     ValidatedEgtAboveCondition,
+    ValidatedEgtAtMaximumCondition,
     ValidatedRotorSpeedAboveCondition,
 )
 from simulation.scenarios.definitions import Scenario
@@ -75,7 +83,7 @@ class FakeService:
 
     def set_throttle(self, throttle_demand: float) -> float:
         self.calls.append(("throttle", throttle_demand))
-        return throttle_demand
+        return max(0.0, min(throttle_demand, 1.0))
 
     def request_shutdown(self) -> None:
         self.calls.append("shutdown")
@@ -91,6 +99,9 @@ class FakeService:
 
     def clear_sensor_fault(self, channel: object) -> None:
         self.calls.append(("clear", channel))
+
+    def set_fuel_delivery_fault(self, active: bool) -> None:
+        self.calls.append(("fuel_delivery_fault", active))
 
     def add_marker(self, text: str) -> SimulationEvent:
         self.calls.append(("marker", text))
@@ -280,6 +291,38 @@ def test_state_signal_event_and_dependency_conditions_use_observable_data() -> N
     assert EngineStateEqualsCondition(EngineOperatingState.IDLE).evaluate(context)
     assert ValidatedRotorSpeedAboveCondition(39_000.0).evaluate(context)
     assert ValidatedEgtAboveCondition(499.0).evaluate(context)
+    assert ValidatedEgtAtMaximumCondition().evaluate(
+        replace(
+            context,
+            latest_snapshot=replace(
+                context.latest_snapshot,
+                validated_exhaust_temperature_c=680.0,
+                egt_maximum_temperature_c=680.0,
+            ),
+        )
+    )
+    assert ConstrainingLimiterCondition(ProtectionLimiter.EGT).evaluate(
+        replace(
+            context,
+            latest_snapshot=replace(
+                context.latest_snapshot,
+                constraining_protection_limiters=(ProtectionLimiter.EGT,),
+            ),
+        )
+    )
+    assert ProtectionReasonActiveCondition(
+        ProtectionDiagnosticReason.EGT_LIMITING
+    ).evaluate(
+        replace(
+            context,
+            latest_snapshot=replace(
+                context.latest_snapshot,
+                protection_diagnostic_reasons=(
+                    ProtectionDiagnosticReason.EGT_LIMITING,
+                ),
+            ),
+        )
+    )
     assert EventTypeObservedCondition(EventType.USER_MARKER).evaluate(context)
     assert ActionExecutedCondition("first").evaluate(context)
     assert ElapsedAfterActionCondition("first", 0.5).evaluate(context)
@@ -339,6 +382,12 @@ def test_typed_actions_route_every_command_through_service(tmp_path: Path) -> No
             trigger=trigger,
             channel=SensorChannel.ROTOR_SPEED,
         ),
+        SetFuelDeliveryFaultAction(
+            action_id="fuel_fault",
+            description="Fuel delivery fault",
+            trigger=trigger,
+            active=True,
+        ),
         AddMarkerAction(
             action_id="marker",
             description="Marker",
@@ -369,13 +418,14 @@ def test_typed_actions_route_every_command_through_service(tmp_path: Path) -> No
         "fault",
         ("inject", SensorChannel.ROTOR_SPEED, DropoutSensorFault()),
         ("clear", SensorChannel.ROTOR_SPEED),
+        ("fuel_delivery_fault", True),
         ("marker", "test marker"),
         ("record_start", "scenario"),
         ("record_stop", True),
     ]
 
 
-@pytest.mark.parametrize("value", [-0.1, 1.1, float("nan")])
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
 def test_throttle_action_rejects_invalid_input(value: float) -> None:
     with pytest.raises(ValueError, match="throttle"):
         SetThrottleAction(
@@ -384,3 +434,25 @@ def test_throttle_action_rejects_invalid_input(value: float) -> None:
             trigger=AtTimeTrigger(0.0),
             throttle_demand=value,
         )
+
+
+@pytest.mark.parametrize(
+    ("requested", "accepted"),
+    [(-0.1, 0.0), (1.1, 1.0)],
+)
+def test_throttle_action_allows_service_boundary_clamping(
+    tmp_path: Path,
+    requested: float,
+    accepted: float,
+) -> None:
+    service = FakeService(tmp_path)
+
+    message = SetThrottleAction(
+        action_id="throttle",
+        description="Throttle",
+        trigger=AtTimeTrigger(0.0),
+        throttle_demand=requested,
+    ).execute(service)
+
+    assert service.calls == [("throttle", requested)]
+    assert message == f"throttle set to {accepted:.3f}"

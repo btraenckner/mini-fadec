@@ -197,6 +197,7 @@ class EngineSimulationCoordinator:
             SensorFaultResponseReason | None
         ) = None
         self._critical_fault_transition_pending = False
+        self._fuel_delivery_fault_active = False
         self._previous_operating_state_for_snapshot = self.state_machine.state
         self._state_entered_time_s = 0.0
 
@@ -433,6 +434,17 @@ class EngineSimulationCoordinator:
 
         return self.sensor_fault_injector.describe(channel)
 
+    @property
+    def fuel_delivery_fault_active(self) -> bool:
+        """Return the simulation-only physical fuel-delivery fault state."""
+
+        return self._fuel_delivery_fault_active
+
+    def set_fuel_delivery_fault(self, active: bool) -> None:
+        """Inject or clear a simulation-only loss of delivered plant fuel."""
+
+        self._fuel_delivery_fault_active = bool(active)
+
     def _validation_context(
         self,
         request: EngineOperationRequest,
@@ -657,8 +669,15 @@ class EngineSimulationCoordinator:
     def _plant_task(self, context: TaskExecutionContext) -> None:
         """Integrate the plant once using the explicitly held actuator output."""
 
+        plant_command = self._held_applied_command
+        if self._fuel_delivery_fault_active:
+            plant_command = replace(
+                plant_command,
+                fuel_command=0.0,
+                fuel_enabled=False,
+            )
         self._held_engine_outputs = self.engine_model.step(
-            actuator_command=self._held_applied_command,
+            actuator_command=plant_command,
             ambient_conditions=self.ambient_conditions,
             time_step_s=context.execution_period_s,
         )
@@ -737,6 +756,10 @@ class EngineSimulationCoordinator:
             ),
             operating_state=operating_command.state,
             state_duration_s=self._state_duration_s,
+            start_elapsed_s=self.state_machine.start_elapsed_s,
+            start_timeout_triggered=(
+                self.state_machine.start_timeout_triggered
+            ),
             starter_commanded=allowed_command.starter_commanded,
             ignition_commanded=allowed_command.ignition_commanded,
             speed_control_enabled=operating_command.speed_control_enabled,
@@ -817,6 +840,7 @@ class EngineSimulationCoordinator:
                     SensorChannel.EXHAUST_TEMPERATURE
                 )
             ),
+            fuel_delivery_fault_active=self._fuel_delivery_fault_active,
             allowed_fuel_command=allowed_command.fuel_command,
             egt_fuel_limit=protection_result.egt_fuel_limit,
             acceleration_fuel_limit=protection_result.acceleration_fuel_limit,
@@ -914,6 +938,8 @@ class EngineSimulationCoordinator:
             plant_model_id=plant_diagnostics.model_id,
             plant_display_name=plant_diagnostics.display_name,
             plant_model_version=plant_diagnostics.model_version,
+            ambient_temperature_c=self.ambient_conditions.temperature_c,
+            ambient_pressure_pa=self.ambient_conditions.pressure_pa,
             plant_time_s=plant_diagnostics.model_time_s,
             plant_step_count=plant_diagnostics.step_count,
             plant_diagnostics=plant_diagnostics.pathsim,
@@ -1149,6 +1175,8 @@ class EngineSimulationCoordinator:
             previous_operating_state=EngineOperatingState.OFF,
             operating_state=EngineOperatingState.OFF,
             state_duration_s=0.0,
+            start_elapsed_s=0.0,
+            start_timeout_triggered=False,
             starter_commanded=False,
             ignition_commanded=False,
             speed_control_enabled=False,
@@ -1185,6 +1213,7 @@ class EngineSimulationCoordinator:
             exhaust_temperature_fault="none",
             exhaust_temperature_fault_type="none",
             exhaust_temperature_fault_parameters=(),
+            fuel_delivery_fault_active=False,
             aggregate_sensor_health=ChannelHealth.VALID,
             rotor_speed_sensor_sample_period_s=(
                 self._task_period_s(SENSOR_TASK)
@@ -1258,6 +1287,8 @@ class EngineSimulationCoordinator:
             plant_model_id=plant_diagnostics.model_id,
             plant_display_name=plant_diagnostics.display_name,
             plant_model_version=plant_diagnostics.model_version,
+            ambient_temperature_c=self.ambient_conditions.temperature_c,
+            ambient_pressure_pa=self.ambient_conditions.pressure_pa,
             plant_time_s=plant_diagnostics.model_time_s,
             plant_step_count=plant_diagnostics.step_count,
             plant_diagnostics=plant_diagnostics.pathsim,

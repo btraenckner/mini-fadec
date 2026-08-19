@@ -66,8 +66,8 @@ Implementation status is independent of a verification result:
 
 - `EXECUTABLE_SCENARIO` means a deterministic scenario and post-run evidence
   are linked.
-- `PARTIAL_AUTOMATION` means useful automated checks exist, but a complete
-  formal scenario or evidence package is still missing.
+- `PARTIAL_AUTOMATION` means useful automated checks or scenarios exist, but a
+  complete formal evidence claim is still blocked by an explicit gap.
 - `PLANNED` means no executable evidence is claimed yet.
 
 ## Planned campaign groups
@@ -84,7 +84,7 @@ Implementation status is independent of a verification result:
 | Arbitration | `TC-PROT-001` | Concurrent limiter precedence |
 | Sensor faults | `TC-SENS-001` through `TC-SENS-004` | Validated feedback, dropout, fault matrix, recovery |
 | Scheduling | `TC-SCH-001`, `TC-SCH-002` | Releases, counts, and task ordering |
-| Environment | `TC-ENV-001` | Approved ambient-domain corners |
+| Environment | `TC-ENV-001` | SIL ambient propagation and future physical corners |
 
 ## Result rules
 
@@ -97,6 +97,12 @@ Implementation status is independent of a verification result:
 - A planned requirement without an executable trace remains an open coverage
   gap and cannot be counted as passing.
 - Repeated deterministic runs must produce equivalent normalized results.
+
+The three current ambient scenarios are project-selected SIL challenge points,
+not approved engine operating-envelope corners. They verify that ambient inputs
+are controlled and recorded and that outputs remain finite and commands
+bounded. `TC-ENV-001` remains `PARTIAL_AUTOMATION` until an ambient-sensitive,
+validated plant and profile-specific approved bounds are available.
 
 ## Evidence package
 
