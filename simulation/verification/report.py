@@ -5,6 +5,10 @@ from pathlib import Path
 
 from simulation.scenarios.definitions import Scenario
 from simulation.scenarios.serialization import scenario_to_dict
+from simulation.verification.baseline import (
+    RequirementBaseline,
+    fadec_control_requirements_baseline,
+)
 from simulation.verification.requirements import RequirementStatus
 from simulation.verification.results import ScenarioResult
 from simulation.verification.serialization import (
@@ -28,12 +32,18 @@ def write_verification_artifacts(
     scenario_path = run_directory / "scenario.json"
     requirements_path = run_directory / "requirements.json"
     report_path = run_directory / "report.md"
+    requirements_baseline = fadec_control_requirements_baseline()
 
     write_json_exclusive(scenario_path, scenario_to_dict(scenario))
     write_json_exclusive(
         requirements_path,
         {
             "report_schema_version": REQUIREMENTS_REPORT_SCHEMA_VERSION,
+            "requirements_baseline": {
+                "baseline_id": requirements_baseline.baseline_id,
+                "version": requirements_baseline.version,
+                "status": requirements_baseline.status.value,
+            },
             "scenario_id": result.scenario_id,
             "scenario_name": result.scenario_name,
             "overall_result": result.overall_status.value,
@@ -76,6 +86,7 @@ def write_verification_artifacts(
         scenario=scenario,
         result=result,
         git_commit=git_commit,
+        requirements_baseline=requirements_baseline,
     )
     if result.metadata_path is not None and result.metadata_path.exists():
         update_json_object(
@@ -86,6 +97,11 @@ def write_verification_artifacts(
                 "scenario_tags": scenario.tags,
                 "scenario_execution_status": result.execution_status,
                 "overall_verification_result": result.overall_status.value,
+                "requirements_baseline_id": requirements_baseline.baseline_id,
+                "requirements_baseline_version": requirements_baseline.version,
+                "requirements_baseline_status": (
+                    requirements_baseline.status.value
+                ),
                 "requirement_counts": {
                     "passed": result.passed_requirement_count,
                     "failed": result.failed_requirement_count,
@@ -114,6 +130,7 @@ def _write_markdown_report(
     scenario: Scenario,
     result: ScenarioResult,
     git_commit: str | None,
+    requirements_baseline: RequirementBaseline,
 ) -> None:
     failed = tuple(
         requirement
@@ -144,6 +161,12 @@ def _write_markdown_report(
         ),
         f"- Wall-clock duration: {result.wall_clock_execution_duration_s:.6f} s",
         f"- Final engine state: {result.final_engine_state.value}",
+        (
+            "- Requirements baseline: "
+            f"{requirements_baseline.baseline_id} "
+            f"v{requirements_baseline.version} "
+            f"({requirements_baseline.status.value})"
+        ),
         f"- Git commit: {git_commit or 'unavailable'}",
         f"- Run directory: {result.run_directory or 'unavailable'}",
         "",

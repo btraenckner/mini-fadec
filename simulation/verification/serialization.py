@@ -6,7 +6,7 @@ from pathlib import Path
 from simulation.scenarios.serialization import definition_to_dict
 
 
-REQUIREMENTS_REPORT_SCHEMA_VERSION = "1.0"
+REQUIREMENTS_REPORT_SCHEMA_VERSION = "1.1"
 
 
 def write_json_exclusive(path: Path, payload: object) -> None:

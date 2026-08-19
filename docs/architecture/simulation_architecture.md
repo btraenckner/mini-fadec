@@ -512,6 +512,15 @@ requirements use validated values and final actuator commands. Engine truth
 remains available only for requirements explicitly identified as
 simulation-only.
 
+The versioned control-software requirements baseline is owned by
+`simulation.verification.baseline`. Its stable `FADEC-*` identifiers trace
+system-level intent to planned test cases and, where evidence already exists,
+to scenario and executable `REQ-*` identifiers. Scenario reports capture the
+active baseline identifier, version, and lifecycle status. The source-controlled
+human baseline and traceability matrix live in `docs/requirements/` and
+`docs/verification/`; a structural trace does not by itself claim that a
+requirement passed for every engine profile.
+
 ### Scenario definitions, actions, and sequencing
 
 A `Scenario` has a stable ID, name, description, maximum duration, optional

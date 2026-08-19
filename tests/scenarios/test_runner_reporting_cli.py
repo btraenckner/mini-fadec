@@ -317,14 +317,26 @@ def test_reports_metadata_and_json_are_complete_and_standards_compliant(
     requirements = json.loads(requirements_text)
     metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))  # type: ignore[union-attr]
 
-    assert requirements["report_schema_version"] == "1.0"
+    assert requirements["report_schema_version"] == "1.1"
+    assert requirements["requirements_baseline"] == {
+        "baseline_id": "MINI-FADEC-CONTROL-REQ",
+        "version": "0.1.0",
+        "status": "DRAFT",
+    }
     assert requirements["action_results"]
     assert requirements["requirement_results"][0]["evidence"]["measured_value"] is None
     assert "NaN" not in requirements_text
     assert "Scenario result:** PASS" in report_text
+    assert (
+        "Requirements baseline: MINI-FADEC-CONTROL-REQ v0.1.0 (DRAFT)"
+        in report_text
+    )
     assert "REQ-TEST-001" in report_text
     assert metadata["scenario_id"] == "SCN-TEST-001"
     assert metadata["overall_verification_result"] == "PASS"
+    assert metadata["requirements_baseline_id"] == "MINI-FADEC-CONTROL-REQ"
+    assert metadata["requirements_baseline_version"] == "0.1.0"
+    assert metadata["requirements_baseline_status"] == "DRAFT"
 
     with pytest.raises(FileExistsError):
         write_verification_artifacts(

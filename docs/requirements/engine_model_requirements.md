@@ -1,3 +1,9 @@
+> Historical note: this file records the initial engine-model requirements
+> from the project foundation. It is not the current control-software
+> acceptance baseline, and EMR-006 has been superseded by the implemented
+> start/shutdown model. Current control requirements are defined in
+> [fadec_control_requirements.md](fadec_control_requirements.md).
+
 EMR-001:
 The engine model shall represent the rotor speed between
 39,000 rpm and 128,000 rpm.
