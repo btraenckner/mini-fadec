@@ -39,6 +39,7 @@ class EngineModelParameters:
 
     idle_thrust_n: float = 6.0
     maximum_thrust_n: float = 140.0
+    thrust_speed_exponent: float = 2.0
 
     idle_fuel_flow_ml_min: float = 100.0
     maximum_fuel_flow_ml_min: float = 480.0
@@ -268,7 +269,7 @@ class FirstOrderEngineModel:
                     self.parameters.maximum_thrust_n
                     - self.parameters.idle_thrust_n
                 )
-                * normalized_speed**2
+                * normalized_speed**self.parameters.thrust_speed_exponent
             )
         else:
             estimated_thrust_n = 0.0

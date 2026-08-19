@@ -67,9 +67,9 @@ closed-loop examples route feedback through fault injection and validation.
 Application construction has two independent typed inputs:
 
 - `EngineDefinition` describes what the software is connected to: engine
-  identity and version, selected plant backend and parameters, installed
-  sensor behavior, actuator command capability, and the approved physical
-  operating envelope.
+  identity and version, published hardware facts and their provenance,
+  selected plant backend and parameters, installed sensor behavior, actuator
+  command capability, and the approved physical operating envelope.
 - `FadecCalibration` describes how the control software is tuned for that
   engine: throttle-to-speed schedule, controller gains, state-machine
   thresholds, sensor validation, and every centralized fuel-protection value.
@@ -86,6 +86,13 @@ inconsistent start thresholds, unsupported starter or ignition commands, and
 fuel ranges outside the actuator interface. Dashboard plant and scheduler
 changes rebuild the runtime while retaining the same engine identity and FADEC
 calibration.
+
+An `EngineConfigurationProfile` pairs one compatible definition and
+calibration with a stable ID and evidence level. The dashboard can select a
+profile only while `OFF`; it reconstructs the whole runtime but preserves the
+chosen First-order or PathSim backend. The scenario runner receives the same
+profile ID, so runner recordings retain profile traceability rather than
+silently returning to the reference engine.
 
 Every recording captures the complete serialized engine definition and FADEC
 calibration in `metadata.json`, together with their identifiers and versions.

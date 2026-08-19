@@ -1,5 +1,6 @@
 """Headless unit tests for the Matplotlib live engine dashboard."""
 
+from dataclasses import replace
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -165,11 +166,90 @@ def test_dashboard_hides_plant_selector_with_plant_panel() -> None:
     dashboard._on_plant_panel(None)
     assert dashboard._plant_selector_axis.get_visible()
     assert dashboard._plant_model_selector.active
+    assert dashboard._engine_profile_selector_axis.get_visible()
+    assert dashboard._engine_profile_selector.active
 
     dashboard._on_plant_panel(None)
 
     assert not dashboard._plant_selector_axis.get_visible()
     assert not dashboard._plant_model_selector.active
+    assert not dashboard._engine_profile_selector_axis.get_visible()
+    assert not dashboard._engine_profile_selector.active
+    dashboard.close(save_result=False)
+
+
+def test_dashboard_selects_engine_profile_and_displays_evidence_level() -> None:
+    dashboard = LiveEngineDashboard()
+
+    dashboard._on_plant_panel(None)
+    dashboard._on_engine_profile_selected("JetCat P1000-PRO")
+
+    assert dashboard.dashboard_simulation.selected_engine_profile_id == (
+        "jetcat-p1000-pro"
+    )
+    assert "JetCat P1000-PRO" in dashboard._plant_summary_text.get_text()
+    assert "public-data grey-box" in dashboard._plant_summary_text.get_text()
+    assert "matching FADEC calibration" in (
+        dashboard._plant_feedback_text.get_text()
+    )
+    dashboard.close(save_result=False)
+
+
+def test_dashboard_axes_follow_selected_engine_profile_and_egt_limits() -> None:
+    dashboard = LiveEngineDashboard()
+
+    dashboard._on_engine_profile_selected("JetCat P1000-PRO")
+    speed_axis, egt_axis, fuel_axis, thrust_axis = dashboard._plot_axes
+
+    assert speed_axis.get_ylim() == pytest.approx((0.0, 75_000.0))
+    assert egt_axis.get_ylim() == pytest.approx((0.0, 800.0))
+    assert thrust_axis.get_ylim() == pytest.approx((0.0, 1_250.0))
+    assert fuel_axis.get_ylim() == pytest.approx((-0.05, 1.05))
+    assert dashboard._egt_intervention_line.get_ydata() == pytest.approx(
+        (700.0, 700.0)
+    )
+    assert dashboard._egt_maximum_line.get_ydata() == pytest.approx(
+        (720.0, 720.0)
+    )
+
+    dashboard._on_engine_profile_selected("ADW B350STG (provisional)")
+
+    assert speed_axis.get_ylim() == pytest.approx((0.0, 125_000.0))
+    assert egt_axis.get_ylim() == pytest.approx((0.0, 850.0))
+    assert thrust_axis.get_ylim() == pytest.approx((0.0, 400.0))
+    assert dashboard._egt_intervention_line.get_ydata() == pytest.approx(
+        (740.0, 740.0)
+    )
+    assert dashboard._egt_maximum_line.get_ydata() == pytest.approx(
+        (760.0, 760.0)
+    )
+    dashboard.close(save_result=False)
+
+
+def test_dashboard_axes_expand_for_outliers_and_negative_fault_values() -> None:
+    dashboard = LiveEngineDashboard()
+    snapshot = replace(
+        dashboard.dashboard_simulation.get_latest_snapshot(),
+        simulation_time_s=1.0,
+        speed_setpoint_rpm=220_000.0,
+        rotor_speed_rpm=225_000.0,
+        measured_rotor_speed_rpm=250_000.0,
+        validated_rotor_speed_rpm=None,
+        exhaust_temperature_c=1_200.0,
+        measured_exhaust_temperature_c=-200.0,
+        validated_exhaust_temperature_c=None,
+        estimated_thrust_n=2_000.0,
+    )
+    dashboard.dashboard_simulation.history.clear()
+    dashboard.dashboard_simulation.history.append(snapshot)
+
+    dashboard._refresh_dashboard(snapshot)
+
+    speed_axis, egt_axis, _fuel_axis, thrust_axis = dashboard._plot_axes
+    assert speed_axis.get_ylim()[1] > 250_000.0
+    assert egt_axis.get_ylim()[0] < -200.0
+    assert egt_axis.get_ylim()[1] > 1_200.0
+    assert thrust_axis.get_ylim()[1] > 2_000.0
     dashboard.close(save_result=False)
 
 

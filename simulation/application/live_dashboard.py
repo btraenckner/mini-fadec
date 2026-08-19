@@ -1,5 +1,7 @@
 """Matplotlib-based live dashboard for the Mini-FADEC simulation."""
 
+import math
+from collections.abc import Sequence
 from pathlib import Path
 import time
 
@@ -56,6 +58,7 @@ class LiveEngineDashboard:
 
         self._closed = False
         self._plant_selection_updating = False
+        self._engine_profile_selection_updating = False
         self._last_displayed_event_sequence = 0
         self._last_update_time = time.monotonic()
         self._figure, self._plot_axes = self._create_figure()
@@ -324,7 +327,7 @@ class LiveEngineDashboard:
         self._update_scenario_status()
 
     def _create_plant_panel(self) -> None:
-        """Create the stopped-only plant selector and diagnostics overlay."""
+        """Create stopped-only engine-profile and plant-model selectors."""
 
         panel_axis = self._figure.add_axes((0.425, 0.12, 0.55, 0.75))
         panel_axis.set_facecolor(self._PANEL_COLOR)
@@ -337,7 +340,7 @@ class LiveEngineDashboard:
         panel_axis.text(
             0.035,
             0.955,
-            "ENGINE PLANT MODEL",
+            "ENGINE PROFILE / PLANT MODEL",
             transform=panel_axis.transAxes,
             fontsize=11,
             fontweight="bold",
@@ -356,20 +359,66 @@ class LiveEngineDashboard:
         )
         panel_axis.text(
             0.035,
-            0.795,
-            "SELECT MODEL  /  STOPPED ONLY",
+            0.790,
+            "SELECT ENGINE PROFILE  /  STOPPED ONLY",
             transform=panel_axis.transAxes,
             fontsize=7.5,
             fontweight="bold",
             color=self._MUTED_TEXT_COLOR,
         )
 
+        profiles = self.dashboard_simulation.available_engine_profiles()
+        profile_labels = tuple(profile.display_name for profile in profiles)
+        selected_profile_id = (
+            self.dashboard_simulation.selected_engine_profile_id
+        )
+        profile_ids = tuple(profile.profile_id for profile in profiles)
+        active_profile_index = (
+            profile_ids.index(selected_profile_id)
+            if selected_profile_id in profile_ids
+            else 0
+        )
+        profile_selector_axis = self._figure.add_axes(
+            (0.455, 0.635, 0.43, 0.075)
+        )
+        profile_selector_axis.set_zorder(33)
+        self._style_widget_axis(profile_selector_axis)
+        self._engine_profile_selector = RadioButtons(
+            profile_selector_axis,
+            profile_labels,
+            active=active_profile_index,
+            activecolor=self._ACCENT_COLOR,
+            useblit=False,
+            radio_props={
+                "edgecolor": self._MUTED_TEXT_COLOR,
+                "linewidth": 0.8,
+                "s": 30.0,
+            },
+        )
+        for label in self._engine_profile_selector.labels:
+            label.set_fontsize(7.3)
+            label.set_color(self._TEXT_COLOR)
+        self._engine_profile_selector.on_clicked(
+            self._on_engine_profile_selected
+        )
+        self._engine_profiles = profiles
+        self._engine_profile_labels = profile_labels
+
+        panel_axis.text(
+            0.035,
+            0.675,
+            "SELECT PLANT BACKEND  /  STOPPED ONLY",
+            transform=panel_axis.transAxes,
+            fontsize=7.5,
+            fontweight="bold",
+            color=self._MUTED_TEXT_COLOR,
+        )
         models = self.dashboard_simulation.available_plant_models()
         labels = tuple(model.display_name for model in models)
         active_index = tuple(model.model for model in models).index(
             self.dashboard_simulation.selected_plant_model
         )
-        selector_axis = self._figure.add_axes((0.455, 0.625, 0.35, 0.075))
+        selector_axis = self._figure.add_axes((0.455, 0.545, 0.35, 0.060))
         selector_axis.set_zorder(33)
         self._style_widget_axis(selector_axis)
         self._plant_model_selector = RadioButtons(
@@ -393,8 +442,8 @@ class LiveEngineDashboard:
 
         panel_axis.text(
             0.035,
-            0.630,
-            "ACTIVE CONFIGURATION  /  UNVALIDATED ASSUMPTIONS",
+            0.555,
+            "ACTIVE CONFIGURATION  /  MODEL ASSUMPTIONS",
             transform=panel_axis.transAxes,
             fontsize=7.5,
             fontweight="bold",
@@ -402,7 +451,7 @@ class LiveEngineDashboard:
         )
         self._plant_configuration_text = panel_axis.text(
             0.035,
-            0.595,
+            0.520,
             "",
             transform=panel_axis.transAxes,
             fontsize=5.6,
@@ -413,7 +462,7 @@ class LiveEngineDashboard:
         )
         panel_axis.text(
             0.535,
-            0.630,
+            0.555,
             "PATHSIM DYNAMICS  /  READ ONLY",
             transform=panel_axis.transAxes,
             fontsize=7.5,
@@ -422,7 +471,7 @@ class LiveEngineDashboard:
         )
         self._plant_diagnostics_text = panel_axis.text(
             0.535,
-            0.595,
+            0.520,
             "",
             transform=panel_axis.transAxes,
             fontsize=6.4,
@@ -434,7 +483,7 @@ class LiveEngineDashboard:
         self._plant_feedback_text = panel_axis.text(
             0.035,
             0.045,
-            "Changing the model creates a fresh, fully reset application.",
+            "Changing the profile or backend creates a fresh, reset application.",
             transform=panel_axis.transAxes,
             fontsize=7,
             color=self._MUTED_TEXT_COLOR,
@@ -447,6 +496,7 @@ class LiveEngineDashboard:
         )
         close_button.ax.set_zorder(34)
         self._plant_panel_axis = panel_axis
+        self._engine_profile_selector_axis = profile_selector_axis
         self._plant_selector_axis = selector_axis
         self._plant_close_button = close_button
         self._plant_panel_visible = False
@@ -965,14 +1015,14 @@ class LiveEngineDashboard:
             label="Validated",
         )
         snapshot = self.dashboard_simulation.service.get_latest_snapshot()
-        egt_axis.axhline(
+        self._egt_intervention_line = egt_axis.axhline(
             snapshot.egt_intervention_temperature_c,
             color=self._WARNING_COLOR,
             linestyle="--",
             linewidth=1.2,
             label="Intervention",
         )
-        egt_axis.axhline(
+        self._egt_maximum_line = egt_axis.axhline(
             snapshot.egt_maximum_temperature_c,
             color=self._DANGER_COLOR,
             linestyle="--",
@@ -1138,6 +1188,11 @@ class LiveEngineDashboard:
         )
         for axis in self._plot_axes:
             axis.set_xlim(window_start_s, window_end_s)
+        self._update_y_axis_limits(
+            snapshot,
+            window_start_s=window_start_s,
+            window_end_s=window_end_s,
+        )
 
         self._update_status(snapshot)
         self._update_scenario_status()
@@ -1145,6 +1200,171 @@ class LiveEngineDashboard:
         self._update_timing_panel()
         self._update_plant_panel(snapshot)
         self._figure.canvas.draw_idle()
+
+    def _update_y_axis_limits(
+        self,
+        snapshot: EngineSimulationSnapshot,
+        *,
+        window_start_s: float,
+        window_end_s: float,
+    ) -> None:
+        """Fit physical signal axes to the active profile and visible data."""
+
+        history = self.dashboard_simulation.history
+        speed_values = list(
+            self._visible_finite_values(
+                history.times_s,
+                (
+                    history.speed_setpoints_rpm,
+                    history.rotor_speeds_rpm,
+                    history.measured_rotor_speeds_rpm,
+                    history.validated_rotor_speeds_rpm,
+                ),
+                window_start_s=window_start_s,
+                window_end_s=window_end_s,
+            )
+        )
+        engine_definition = self.dashboard_simulation.service.engine_definition
+        if engine_definition is not None:
+            speed_values.append(
+                engine_definition.operating_envelope.maximum_transient_speed_rpm
+            )
+
+        egt_values = list(
+            self._visible_finite_values(
+                history.times_s,
+                (
+                    history.exhaust_temperatures_c,
+                    history.measured_exhaust_temperatures_c,
+                    history.validated_exhaust_temperatures_c,
+                ),
+                window_start_s=window_start_s,
+                window_end_s=window_end_s,
+            )
+        )
+        egt_values.extend(
+            (
+                snapshot.egt_intervention_temperature_c,
+                snapshot.egt_maximum_temperature_c,
+            )
+        )
+        self._egt_intervention_line.set_ydata(
+            (snapshot.egt_intervention_temperature_c,) * 2
+        )
+        self._egt_maximum_line.set_ydata(
+            (snapshot.egt_maximum_temperature_c,) * 2
+        )
+
+        thrust_values = list(
+            self._visible_finite_values(
+                history.times_s,
+                (history.estimated_thrusts_n,),
+                window_start_s=window_start_s,
+                window_end_s=window_end_s,
+            )
+        )
+        plant_metadata = self.dashboard_simulation.get_plant_metadata()
+        configuration = plant_metadata.get("configuration", {})
+        if isinstance(configuration, dict):
+            configured_maximum_thrust = configuration.get(
+                "maximum_thrust_n"
+            )
+            if isinstance(configured_maximum_thrust, (int, float)):
+                thrust_values.append(float(configured_maximum_thrust))
+
+        speed_axis, egt_axis, _fuel_axis, thrust_axis = self._plot_axes
+        speed_axis.set_ylim(
+            self._adaptive_physical_axis_limits(
+                speed_values,
+                minimum_upper_limit=10_000.0,
+            )
+        )
+        egt_axis.set_ylim(
+            self._adaptive_physical_axis_limits(
+                egt_values,
+                minimum_upper_limit=100.0,
+            )
+        )
+        thrust_axis.set_ylim(
+            self._adaptive_physical_axis_limits(
+                thrust_values,
+                minimum_upper_limit=10.0,
+            )
+        )
+
+    @staticmethod
+    def _visible_finite_values(
+        times_s: Sequence[float],
+        signal_histories: Sequence[Sequence[float | None]],
+        *,
+        window_start_s: float,
+        window_end_s: float,
+    ) -> tuple[float, ...]:
+        """Return finite signal values inside the currently visible window."""
+
+        values: list[float] = []
+        for signal_history in signal_histories:
+            for simulation_time_s, value in zip(times_s, signal_history):
+                if (
+                    value is not None
+                    and window_start_s <= simulation_time_s <= window_end_s
+                    and math.isfinite(value)
+                ):
+                    values.append(value)
+        return tuple(values)
+
+    @classmethod
+    def _adaptive_physical_axis_limits(
+        cls,
+        values: Sequence[float],
+        *,
+        minimum_upper_limit: float,
+    ) -> tuple[float, float]:
+        """Return padded, readable limits that include zero and all values."""
+
+        finite_values = tuple(value for value in values if math.isfinite(value))
+        if not finite_values:
+            return 0.0, minimum_upper_limit
+        minimum_value = min(0.0, min(finite_values))
+        maximum_value = max(0.0, max(finite_values))
+        span = max(
+            maximum_value - minimum_value,
+            minimum_upper_limit,
+        )
+        lower_limit = (
+            minimum_value - 0.08 * span if minimum_value < 0.0 else 0.0
+        )
+        upper_target = max(
+            minimum_upper_limit,
+            maximum_value + 0.08 * span,
+        )
+        return lower_limit, cls._rounded_axis_upper_limit(upper_target)
+
+    @staticmethod
+    def _rounded_axis_upper_limit(value: float) -> float:
+        """Round an upper limit outward to a compact engineering value."""
+
+        magnitude = 10.0 ** math.floor(math.log10(value))
+        normalized_value = value / magnitude
+        for step in (
+            1.0,
+            1.25,
+            1.5,
+            1.75,
+            2.0,
+            2.5,
+            3.0,
+            4.0,
+            5.0,
+            6.0,
+            7.5,
+            8.0,
+            8.5,
+            10.0,
+        ):
+            if normalized_value <= step:
+                return step * magnitude
+        return 10.0 * magnitude
 
     def _update_status(self, snapshot: EngineSimulationSnapshot) -> None:
         """Update operating-state, telemetry, and transition indicators."""
@@ -1549,10 +1769,9 @@ class LiveEngineDashboard:
         if not self._plant_panel_visible and self._timing_panel_visible:
             self._set_timing_panel_visible(False)
         self._set_plant_panel_visible(not self._plant_panel_visible)
-        self._update_plant_panel(
+        self._refresh_dashboard(
             self.dashboard_simulation.get_latest_snapshot()
         )
-        self._figure.canvas.draw_idle()
 
     def _set_plant_panel_visible(self, visible: bool) -> None:
         """Show or hide all axes belonging to the plant overlay."""
@@ -1560,13 +1779,42 @@ class LiveEngineDashboard:
         was_visible = self._plant_selector_axis.get_visible()
         self._plant_panel_visible = visible
         self._plant_panel_axis.set_visible(visible)
+        self._engine_profile_selector_axis.set_visible(visible)
         self._plant_selector_axis.set_visible(visible)
+        self._engine_profile_selector.active = visible
         self._plant_model_selector.active = visible
         self._plant_close_button.ax.set_visible(visible)
         if was_visible and not visible:
             # RadioButtons can otherwise leave their last marker collection
             # over the live plots after the plant overlay is closed.
             self._figure.canvas.draw()
+
+    def _on_engine_profile_selected(self, profile_label: str) -> None:
+        """Apply a stopped-only engine and matching FADEC calibration."""
+
+        if self._engine_profile_selection_updating:
+            return
+        try:
+            profile_index = self._engine_profile_labels.index(profile_label)
+            profile = self._engine_profiles[profile_index]
+            self.dashboard_simulation.select_engine_profile(
+                profile.profile_id
+            )
+        except (KeyError, RuntimeError, ValueError) as error:
+            self._plant_feedback_text.set_text(
+                f"Profile selection rejected: {error}"
+            )
+            self._plant_feedback_text.set_color(self._DANGER_COLOR)
+            self._synchronize_engine_profile_selector()
+        else:
+            self._plant_feedback_text.set_text(
+                "Selected engine definition and matching FADEC calibration; "
+                "state reset."
+            )
+            self._plant_feedback_text.set_color(self._SUCCESS_COLOR)
+        self._refresh_dashboard(
+            self.dashboard_simulation.get_latest_snapshot()
+        )
 
     def _on_plant_selected(self, model_label: str) -> None:
         """Apply a stopped-only model selection through the application service."""
@@ -1588,10 +1836,9 @@ class LiveEngineDashboard:
                 "Selected fresh plant instance; simulation state reset."
             )
             self._plant_feedback_text.set_color(self._SUCCESS_COLOR)
-        self._update_plant_panel(
+        self._refresh_dashboard(
             self.dashboard_simulation.get_latest_snapshot()
         )
-        self._figure.canvas.draw_idle()
 
     def _update_plant_panel(
         self,
@@ -1609,7 +1856,11 @@ class LiveEngineDashboard:
             if pathsim_diagnostics is not None
             else "algebraic / explicit Euler update"
         )
+        profile = self.dashboard_simulation.get_engine_profile_metadata()
+        profile_name = str(profile.get("display_name", "Custom composition"))
+        fidelity = str(profile.get("fidelity", "custom / unspecified"))
         self._plant_summary_text.set_text(
+            f"{profile_name}  |  evidence: {fidelity}\n"
             f"{snapshot.plant_display_name}  |  model {snapshot.plant_model_version}\n"
             f"solver {solver}  |  plant period "
             f"{plant_task.effective_period_s * 1_000.0:g} ms  |  "
@@ -1644,6 +1895,7 @@ class LiveEngineDashboard:
                 f"PathSim version    {pathsim_diagnostics.pathsim_version:>9s}"
             )
         self._synchronize_plant_selector(snapshot.plant_model_id)
+        self._synchronize_engine_profile_selector()
         compact_model = (
             "PS" if snapshot.plant_model_id == "pathsim_greybox_v1" else "FO"
         )
@@ -1670,6 +1922,27 @@ class LiveEngineDashboard:
         self._plant_model_selector.set_active(matching_index)
         self._plant_model_selector.eventson = previous_event_state
         self._plant_selection_updating = False
+
+    def _synchronize_engine_profile_selector(self) -> None:
+        """Update the profile marker without recursively changing engines."""
+
+        selected_id = self.dashboard_simulation.selected_engine_profile_id
+        matching_index = next(
+            (
+                index
+                for index, profile in enumerate(self._engine_profiles)
+                if profile.profile_id == selected_id
+            ),
+            None,
+        )
+        if matching_index is None:
+            return
+        self._engine_profile_selection_updating = True
+        previous_event_state = self._engine_profile_selector.eventson
+        self._engine_profile_selector.eventson = False
+        self._engine_profile_selector.set_active(matching_index)
+        self._engine_profile_selector.eventson = previous_event_state
+        self._engine_profile_selection_updating = False
 
     @classmethod
     def _format_plant_configuration(cls, configuration: object) -> str:

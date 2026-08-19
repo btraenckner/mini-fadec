@@ -7,7 +7,10 @@ from simulation.application.composition import create_configured_coordinator
 from simulation.application.engine_simulation import EngineSimulationCoordinator
 from simulation.configuration.engine_definition import EngineDefinition
 from simulation.configuration.fadec_calibration import FadecCalibration
+from simulation.configuration.profile_types import EngineConfigurationProfile
 from simulation.configuration.profiles import (
+    REFERENCE_ENGINE_PROFILE_ID,
+    get_engine_profile,
     reference_engine_definition,
     reference_fadec_calibration,
 )
@@ -64,6 +67,7 @@ class SimulationService:
         *,
         engine_definition: EngineDefinition | None = None,
         fadec_calibration: FadecCalibration | None = None,
+        engine_profile: EngineConfigurationProfile | str | None = None,
         sensor_random_seed: int | None = 0,
         ambient_conditions: AmbientConditions | None = None,
         time_step_s: float = 0.01,
@@ -73,6 +77,7 @@ class SimulationService:
             or plant_config is not None
             or engine_definition is not None
             or fadec_calibration is not None
+            or engine_profile is not None
             or ambient_conditions is not None
         ):
             raise ValueError(
@@ -83,20 +88,54 @@ class SimulationService:
             raise ValueError(
                 "provide either engine_definition or plant_config, not both"
             )
+        if engine_profile is not None and (
+            engine_definition is not None
+            or fadec_calibration is not None
+        ):
+            raise ValueError(
+                "engine_profile cannot be combined with explicit engine, "
+                "or calibration configuration"
+            )
         if time_step_s <= 0.0:
             raise ValueError("time_step_s must be greater than zero")
 
         self.engine_definition: EngineDefinition | None = None
         self.fadec_calibration: FadecCalibration | None = None
+        self.engine_profile_id: str | None = None
+        self.engine_profile_fidelity: str | None = None
         self.sensor_random_seed = sensor_random_seed
         if coordinator is None:
-            self.engine_definition = (
-                engine_definition
-                or reference_engine_definition(plant=plant_config)
-            )
-            self.fadec_calibration = (
-                fadec_calibration or reference_fadec_calibration()
-            )
+            if engine_profile is not None:
+                resolved_profile = (
+                    get_engine_profile(engine_profile)
+                    if isinstance(engine_profile, str)
+                    else engine_profile
+                )
+                self.engine_definition = resolved_profile.engine_definition
+                if plant_config is not None:
+                    self.engine_definition = replace(
+                        self.engine_definition,
+                        plant=plant_selection_for(
+                            plant_config.model,
+                            base=self.engine_definition.plant,
+                        ),
+                    )
+                self.fadec_calibration = resolved_profile.fadec_calibration
+                self.engine_profile_id = resolved_profile.profile_id
+                self.engine_profile_fidelity = resolved_profile.fidelity.value
+            else:
+                self.engine_definition = (
+                    engine_definition
+                    or reference_engine_definition(plant=plant_config)
+                )
+                self.fadec_calibration = (
+                    fadec_calibration or reference_fadec_calibration()
+                )
+                if engine_definition is None and fadec_calibration is None:
+                    self.engine_profile_id = REFERENCE_ENGINE_PROFILE_ID
+                    self.engine_profile_fidelity = (
+                        "educational reference"
+                    )
             coordinator = create_configured_coordinator(
                 self.engine_definition,
                 self.fadec_calibration,
@@ -250,6 +289,26 @@ class SimulationService:
 
         return self.coordinator.engine_model.get_metadata()
 
+    def get_engine_profile_metadata(self) -> dict[str, object]:
+        """Return engine identity, evidence level, and public specifications."""
+
+        if self.engine_definition is None or self.fadec_calibration is None:
+            return {}
+        definition = self.engine_definition.to_dict()
+        return {
+            "profile_id": self.engine_profile_id,
+            "fidelity": self.engine_profile_fidelity,
+            "engine_id": self.engine_definition.engine_id,
+            "display_name": self.engine_definition.display_name,
+            "definition_version": self.engine_definition.definition_version,
+            "calibration_id": self.fadec_calibration.calibration_id,
+            "calibration_version": (
+                self.fadec_calibration.calibration_version
+            ),
+            "hardware": definition["hardware"],
+            "provenance": definition["provenance"],
+        }
+
     def select_plant_model(
         self,
         selection: PlantSelectionConfig | PlantModelKind | str,
@@ -324,6 +383,70 @@ class SimulationService:
             new_value=replacement.engine_model.model_id,
         )
         return selected_config
+
+    def select_engine_profile(
+        self,
+        selection: EngineConfigurationProfile | str,
+    ) -> EngineConfigurationProfile:
+        """Select a compatible engine/calibration pair while safely OFF."""
+
+        selected_profile = (
+            get_engine_profile(selection)
+            if isinstance(selection, str)
+            else selection
+        )
+        if selected_profile.profile_id == self.engine_profile_id:
+            return selected_profile
+        if self.recorder.is_recording:
+            message = "engine profile cannot change while recording is active"
+            self._emit_engine_profile_rejection(message)
+            raise RuntimeError(message)
+        if self.coordinator.snapshot.operating_state is not EngineOperatingState.OFF:
+            message = "engine profile can change only while the engine is OFF"
+            self._emit_engine_profile_rejection(message)
+            raise RuntimeError(message)
+
+        previous_profile_id = self.engine_profile_id
+        selected_definition = replace(
+            selected_profile.engine_definition,
+            plant=replace(
+                selected_profile.engine_definition.plant,
+                model=self.coordinator.plant_config.model,
+            ),
+        )
+        replacement = create_configured_coordinator(
+            selected_definition,
+            selected_profile.fadec_calibration,
+            scheduler_config=self.coordinator.scheduler_config,
+            sensor_random_seed=self.sensor_random_seed,
+            ambient_conditions=self.coordinator.ambient_conditions,
+        )
+        self.coordinator.stop_scheduler()
+        self.engine_definition = selected_definition
+        self.fadec_calibration = selected_profile.fadec_calibration
+        self.engine_profile_id = selected_profile.profile_id
+        self.engine_profile_fidelity = selected_profile.fidelity.value
+        self._attach_coordinator(replacement)
+        self.coordinator.event_log.emit(
+            0.0,
+            EventCategory.SYSTEM,
+            EventType.ENGINE_PROFILE_SELECTED,
+            EventSeverity.INFO,
+            "configuration",
+            f"Engine profile selected: {selected_profile.display_name}",
+            old_value=previous_profile_id,
+            new_value=selected_profile.profile_id,
+        )
+        self.coordinator.event_log.emit(
+            0.0,
+            EventCategory.SYSTEM,
+            EventType.PLANT_RESET,
+            EventSeverity.INFO,
+            "configuration",
+            "Engine, FADEC, and retained application state reset",
+            new_value=selected_profile.profile_id,
+        )
+        return selected_profile
 
     def select_scheduler_preset(self, preset_name: str) -> SchedulerConfig:
         """Select a preset only while stopped, resetting all retained state."""
@@ -400,6 +523,17 @@ class SimulationService:
             "plant_factory",
             message,
             old_value=self.coordinator.engine_model.model_id,
+        )
+
+    def _emit_engine_profile_rejection(self, message: str) -> None:
+        self.coordinator.event_log.emit(
+            self.current_simulation_time_s,
+            EventCategory.SYSTEM,
+            EventType.ENGINE_PROFILE_CONFIGURATION_REJECTED,
+            EventSeverity.WARNING,
+            "configuration",
+            message,
+            old_value=self.engine_profile_id,
         )
 
     def _attach_coordinator(
@@ -596,6 +730,8 @@ class SimulationService:
             self.coordinator.protection_manager.overspeed_limiter.parameters
         )
         configuration_summary = (
+            ("engine_profile_id", self.engine_profile_id),
+            ("engine_profile_fidelity", self.engine_profile_fidelity),
             (
                 "engine_definition_id",
                 None

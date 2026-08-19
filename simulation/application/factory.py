@@ -3,6 +3,7 @@
 from simulation.application.simulation_service import SimulationService
 from simulation.configuration.engine_definition import EngineDefinition
 from simulation.configuration.fadec_calibration import FadecCalibration
+from simulation.configuration.profile_types import EngineConfigurationProfile
 from simulation.core.types import AmbientConditions
 from simulation.plants.config import PlantSelectionConfig
 from simulation.scheduling.config import SchedulerConfig, SchedulingMode
@@ -13,6 +14,7 @@ def create_application(
     *,
     engine_definition: EngineDefinition | None = None,
     fadec_calibration: FadecCalibration | None = None,
+    engine_profile: EngineConfigurationProfile | str | None = None,
     plant_config: PlantSelectionConfig | None = None,
     scheduler_config: SchedulerConfig | None = None,
     sensor_random_seed: int | None = 0,
@@ -26,6 +28,7 @@ def create_application(
     return SimulationService(
         engine_definition=engine_definition,
         fadec_calibration=fadec_calibration,
+        engine_profile=engine_profile,
         plant_config=plant_config,
         scheduler_config=scheduler_config,
         sensor_random_seed=sensor_random_seed,

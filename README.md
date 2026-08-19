@@ -58,6 +58,10 @@ Current activities:
 The selectable PathSim plant backend and its learning examples are documented
 in [docs/pathsim/overview.md](docs/pathsim/overview.md).
 
+Selectable public-data engine examples and their explicit modelling
+limitations are documented in
+[docs/configuration/real_engine_profiles.md](docs/configuration/real_engine_profiles.md).
+
 ## Safety Notice
 
 This project is intended for educational and experimental purposes.

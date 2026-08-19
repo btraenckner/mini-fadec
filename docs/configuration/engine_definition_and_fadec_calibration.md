@@ -12,12 +12,19 @@ in a `FadecCalibration`.
 | Sensor ranges, noise, and quantization | PI controller gains and fuel range |
 | Fuel, starter, and ignition command capability | Start and shutdown thresholds |
 | Continuous and transient operating limits | Signal-validation thresholds |
-| Engine identity and definition version | Protection thresholds and rates |
+| Engine identity, public hardware data, sources, and definition version | Protection thresholds and rates |
 
 The project-owned starting profiles are created by
 `reference_engine_definition()` and `reference_fadec_calibration()` in
 `simulation/configuration/profiles.py`. They preserve the behavior that existed
 before this configuration layer was introduced.
+
+The selectable registry also contains the public-data JetCat P1000-PRO and
+provisional AeroDesignWorks B350STG profiles. Their data provenance, public
+specifications, and modelling limitations are documented in
+[real_engine_profiles.md](real_engine_profiles.md). Use
+`list_engine_profiles()` for discovery or `get_engine_profile(profile_id)` for
+one fresh compatible engine/calibration pair.
 
 ## Defining Another Engine
 
@@ -73,7 +80,9 @@ nested dataclasses explicitly. Give each intentional physical change a new
 
 Recorded `metadata.json` files contain complete `engine_definition` and
 `fadec_calibration` snapshots. They are the authoritative record of which
-configuration produced a run.
+configuration produced a run. Public hardware facts are intentionally separate
+from inferred plant parameters so an assumption cannot silently appear as a
+manufacturer specification.
 
 These profiles remain grey-box development inputs. Their version identifiers
 provide traceability; they do not imply that an engine model or calibration is
